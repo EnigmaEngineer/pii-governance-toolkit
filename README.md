@@ -312,7 +312,7 @@ to make quietly.
 
 ```
 python3 tests/run_all.py            194 checks, standard library only
-python3 tests/run_with_duckdb.py    222 checks, needs the driver
+python3 tests/run_with_duckdb.py    223 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -333,6 +333,11 @@ pii/crawl.py                        28 sites, 0 survivors
 
 The crawler runs under the DuckDB suite, whose oracle is 15.8 seconds against 0.5 for the
 standard library one, so it was sliced across calls with the control at both ends of each.
+
+Those control lines read 222 and the runner above reports 223, and the gap is not a typo.
+The identifier quoting check was written after the pass, when the audit asked what
+`grade_nullability` does with a column called `order`. The control figure is what the pass
+really saw and it stays that way rather than being updated to look tidy.
 
 The nine survivors are all cases where the mutant produces identical output, and the
 distinction between two kinds of that is worth keeping. Three are unconditional. A
