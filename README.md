@@ -9,11 +9,13 @@ data planted in it on purpose, and a measurement of how much an obvious scan wal
 python3 scripts/coverage_probe.py
 ```
 
-That needs nothing but the standard library. Building the warehouse needs DuckDB.
+That needs nothing but the standard library. Building the warehouse and crawling it back
+needs DuckDB.
 
 ```
 pip install -r requirements.txt
 python3 scripts/plant.py --db /tmp/pii.duckdb --key
+python3 scripts/crawl_probe.py --db /tmp/pii.duckdb
 ```
 
 ## What is here
@@ -22,7 +24,8 @@ python3 scripts/plant.py --db /tmp/pii.duckdb --key
 pii/taxonomy.py     categories, the three fields, the granularity ordering
 pii/safeharbor.py   the HIPAA Safe Harbor clause list, as an external answer key
 pii/schema.py       the sample warehouse and its planted labels
-pii/corpus.py       generated rows for that schema
+pii/corpus.py       generated rows for that schema, nulls included
+pii/crawl.py        recovering the schema from a live catalog
 pii/naive.py        the obvious name and regex scan, kept as a floor to measure against
 pii/coverage.py     grading the floor against the clause list
 pii/reidentify.py   uniqueness and k anonymity over quasi identifiers
@@ -43,11 +46,100 @@ pii/rng.py          named random streams
                    pii/corpus.py                      pii/naive.py
                   generated rows                  name and regex floor
                          |                                 |
+                    scripts/plant.py                       |
+                    the duckdb warehouse                   |
+                         |                                 |
+                    pii/crawl.py                           |
+                    reads the catalog back                 |
+                         |                                 |
                          +----------------+----------------+
                                           |
                           pii/coverage.py   pii/reidentify.py
                           what it finds     who it still exposes
 ```
+
+## The schema is no longer its own witness
+
+The 09-17 tree shipped a problem in this file: `pii/schema.py` was a hand written description of
+the warehouse `scripts/plant.py` then built, so any check that the two agreed was a check
+that one of them had written the other. Nothing was learned by running it.
+
+`pii/crawl.py` reads the catalog instead and rebuilds the same `Table` and `Column` objects
+out of what it finds. The content hash over the result is the test, because it covers all
+five fields including the nullability and key flags that nothing else consumes yet:
+
+```
+engine                     duckdb v1.5.5
+tables recovered           5
+columns recovered          42
+key columns recovered      4
+declared fingerprint       1501a19ca3d8
+crawled fingerprint        1501a19ca3d8
+recovered the schema       yes
+differences                0
+```
+
+**Getting there needed a change to the warehouse and not to the crawler.** The emitted DDL
+carried no primary key at all, so `is_key` existed only in this repo's own Python. Four of
+the five fields in that hash were in the catalog and the fifth was nowhere, which made the
+pinned value unreachable for a reason that had nothing to do with reading it. The keys are
+declared now, and the crawler recovers them from `duckdb_constraints()` rather than from
+column names, which matters because `raw.encounter.patient_id` ends in `_id` and is not a
+key.
+
+The crawl reads no rows. Names, types and flags all come out of the catalog, which is the
+property a tool wants if it is going to be pointed at data somebody is not cleared to see.
+`grade_nullability` is the one function that touches data and it reads `count(*) - count(c)`
+per column, so it returns no values either.
+
+**The fingerprint is asymmetric about order and it is worth knowing which way.** It sorts
+the tables, so reversing them leaves the hash identical. It does not sort the columns, so
+swapping two inside a table moves it. A check written on the opposite assumption failed and
+that is how this was found. Column order is reported by the comparison as its own kind of
+difference, because a reordered table and a changed one are not the same event.
+
+## Nullability is a claim about the data now
+
+The corpus writes nulls. It did not before 09-18, and that made every nullable flag a
+declaration nothing had ever exercised: the suite could check that a NOT NULL column holds
+no null, which is the easy direction, and the reverse reading had no evidence at all in
+either direction.
+
+From `scripts/plant.py`, about the four generated tables:
+
+```
+  nullable_columns             26
+  nulls_total                  811
+  nullable, never null         none
+```
+
+From `scripts/crawl_probe.py`, about all five tables in the database:
+
+```
+columns graded             42
+declared not null          13
+not null holding a null    none
+nullable and exercised     29
+nullable, never null       none
+```
+
+The rate is `pii.corpus.NULL_RATE`, which is 0.02.
+
+The rate is a number chosen rather than measured. It is low enough that no aggregate moves
+far and high enough that a thousand rows are very unlikely to miss a column by chance, and
+the suite asserts the observed count rather than trusting that arithmetic.
+
+**The nulls are applied in a post pass, after every value is drawn.** So `generate` with the
+rate turned off reproduces the 09-17 corpus byte for byte, and the suite pins the four
+digests to prove it. That matters because it makes every figure that moved on 09-18
+attributable to the nulls rather than to a shifted draw.
+
+**The first null broke the load, and the schema was wrong rather than the corpus.**
+`analytics.encounter_daily.department` was declared NOT NULL and the mart groups by
+`raw.encounter.department`, which is nullable. A derived column cannot be stricter than the
+column it comes from. Nothing could see it while the corpus had no null in it anywhere. The
+flag moved, and moving it moved the published fingerprint from `dcff0aa3e7a5` to
+`1501a19ca3d8`. Both values are in the suite rather than one quietly replacing the other.
 
 ## The decision this is built on
 
@@ -122,11 +214,17 @@ data here and there never will be, which is why it is planted. Regenerate with
 `python3 scripts/coverage_probe.py`.
 
 ```
+rows carrying all three    946 of 1000, 54 dropped
+
 quasi identifiers                        k     cells   measured    uniform        gap
-sex                                     22         3     0.0000     0.0000    -0.0000
-sex + postal_code                        1       180     0.0290     0.0038    +0.0252
-sex + postal_code + birth_date           1    176760     1.0000     0.9944    +0.0056
+sex                                     21         3     0.0000     0.0000    -0.0000
+sex + postal_code                        1       177     0.0296     0.0047    +0.0249
+sex + postal_code + birth_date           1    164610     1.0000     0.9943    +0.0057
 ```
+
+That table is about the 946 patients carrying all three columns. Which population a
+uniqueness figure is about stopped being a detail the day the corpus started writing nulls,
+and the section after this one is why.
 
 `measured` counts rows whose combination is unique. `uniform` predicts the same quantity
 assuming every combination is drawn independently and evenly across the product of the
@@ -139,27 +237,82 @@ satisfies the prediction by construction and measured nothing, so the generator 
 postal codes on a decaying weight and ages on a curve rather than flat. The busiest postal
 code holds 22.5 percent of the population and the gap column is where that shows up.
 
-Three columns, none of which a flat PII flag would mask, and every one of a thousand people
-is alone in their cell.
+Three columns, none of which a flat PII flag would mask, and every one of the 946 people is
+alone in their cell.
 
 Truncating the postal code to three digits and the birth date to a year:
 
 ```
-sex + postal 3 + birth year              1      1365     0.2070     0.4809    -0.2739
+sex + postal 3 + birth year              1      1365     0.2135     0.5003    -0.2868
 ```
 
 **That row is not evidence about Safe Harbor and the probe says so out loud.** Clause B
 permits the first three digits of a postal code only where the area those digits cover
 holds more than 20,000 people. This corpus has a thousand patients across five three digit
-areas, the smallest of them 11 people, so the allowance does not apply to it at all. The
+areas, the smallest of them 10 people, so the allowance does not apply to it at all. The
 number is correct arithmetic about the corpus and it is not a result about the regulation.
 `pii/safeharbor.postal_3_floor` computes that verdict rather than leaving it to a reader.
+
+Handed the whole corpus it reported six areas rather than five, because the 24 patients with
+no postal code were being counted as a three digit area of their own. A null is not a place.
+It reads the same population as the table above now.
+
+## A null is not anonymity, and the metric disagrees
+
+Every uniqueness figure here counts a null as a value, because that is what a `Counter`
+does. Nobody is protected by this warehouse failing to record their postal code, since
+somebody holding that postal code from elsewhere is not stopped by a gap in this table. So
+the figure moves and nothing about the person has changed.
+
+**Which way it moves was measured rather than argued, and the first version of this section
+had it backwards.** `scripts/crawl_probe.py` sweeps the null rate and prints both
+populations. The last column is the honest share minus the naive one, so a positive number
+means treating nulls as values made the data read safer than it is.
+
+```
+sex + postal_code
+  rate   complete  nulls as a    complete honest minus
+             rows       value   rows only       naive
+  0.00       1000      0.0290      0.0290     +0.0000
+  0.02        964      0.0380      0.0280     -0.0100
+  0.10        803      0.0430      0.0286     -0.0144
+  0.20        624      0.0410      0.0401     -0.0009
+  0.40        350      0.0600      0.1200     +0.0600
+  0.60        154      0.0570      0.2273     +0.1703
+```
+
+A rare null is an uncommon value, so it isolates a row rather than pooling it. At the
+shipped rate of 0.02 the naive figure reads 0.0380 against an honest 0.0280, which is less
+safe and not more. The sign flips somewhere above 0.20, where the null cell finally holds
+enough people to pool them.
+
+```
+sex + postal_code + birth_date
+  0.02        946      0.9940      1.0000     +0.0060
+  0.20        496      0.8400      1.0000     +0.1600
+  0.40        220      0.6520      1.0000     +0.3480
+```
+
+On a combination that is already fully unique the honest figure is pinned at 1.0000 and
+cannot rise, so pooling is the only thing left and the sign never flips. Two combinations
+from the same corpus, moving in opposite directions, for a reason that is about the null
+rate rather than about anybody's privacy.
+
+**Dropping the incomplete rows is not a free fix either.** It shrinks the population, and
+uniqueness depends on how many people are in it. That is why the complete column climbs to
+0.2273 at a 0.60 rate off 154 survivors. Both answers move and for different reasons, so
+both are printed and neither is offered as the number.
+
+`pii/reidentify.generalise_postal` and `coarsen_date_to_year` now refuse a null by name
+rather than raising whatever the language happens to raise on `None`. What a masking policy
+should do with a missing value belongs with the masking work and is not something a generaliser gets
+to make quietly.
 
 ## Running the checks
 
 ```
-python3 tests/run_all.py            166 checks, standard library only
-python3 tests/run_with_duckdb.py    174 checks, needs the driver
+python3 tests/run_all.py            194 checks, standard library only
+python3 tests/run_with_duckdb.py    222 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -169,15 +322,37 @@ that gets published is whichever one somebody read.
 Mutation, run from a copy of the tree with a suite oracle at both ends:
 
 ```
-181 sites over 7 modules, 180 killed, 1 survived
-control before: 166 passed, 0 failed
-control after:  166 passed, 0 failed
+pii/corpus.py + pii/reidentify.py   182 sites, 173 killed, 9 survived
+  control before: 194 passed, 0 failed
+  control after:  194 passed, 0 failed
+
+pii/crawl.py                        28 sites, 0 survivors
+  control before: 222 passed, 0 failed
+  control after:  222 passed, 0 failed
 ```
 
-The survivor turns `sort_keys=True` off in the taxonomy fingerprint. The payload is built
-in dataclass field order, which is stable, so the two produce identical bytes today. It
-stays because without it the published fingerprint would depend on the order fields happen
-to be declared in.
+The crawler runs under the DuckDB suite, whose oracle is 15.8 seconds against 0.5 for the
+standard library one, so it was sliced across calls with the control at both ends of each.
+
+The nine survivors are all cases where the mutant produces identical output, and the
+distinction between two kinds of that is worth keeping. Three are unconditional. A
+`random() < rate` moved to `<=` cannot differ, because `random()` never returns 1.0. A
+`% 8999999` inside the phone number cannot fire below about 243,000 patients. And a
+`flattery > 0` moved to `>= 0` sits inside a comprehension that has already filtered the
+zeroes out.
+
+The other six are equivalent **for this seed** rather than in principle. They widen a
+`randint` bound by one, and the extra value is only reachable if a particular draw lands on
+it, which none does here. A different seed could kill them. They are listed as survivors
+rather than dismissed, because calling a seed dependent result an equivalent mutant is how
+a coverage figure gets rounded up.
+
+**One mutation pass on 09-18 was thrown away.** The oracle had been timed by running the
+suite inside the copied tree without `PYTHONDONTWRITEBYTECODE`, which left `.pyc` files
+behind. `mutate.py` sets that variable for its own subprocesses, so it will not write a
+cache, and it has no way to refuse one that was already there. The control was clean at both
+ends of the discarded pass, which is the uncomfortable part: a clean control does not prove
+a pass was valid against a stale cache. Redone from a copy that nothing had ever executed.
 
 ## Known limitations
 
@@ -208,16 +383,31 @@ above should not be read as covering it.
 **The load uses `executemany`.** It moves about 7,000 rows in well under a second here. It
 does not scale, and the answer at volume is a CSV and a `COPY`.
 
-**Nullability is declared and almost unverified.** The suite checks that every column
-declared NOT NULL really holds no null in the sample data. The reverse reading is worse and
-is not fixed: the generator never writes a null anywhere, so every column declared nullable
-carries a declaration nothing has ever exercised. A mutation pass flipped ten of those flags
-and the suite stayed green until the schema got a content hash pinned to a literal.
+**The recovered nullability is a round trip and the crawl is what it proves.** `plant.py`
+writes the DDL out of `pii/schema.py`, so a recovered `nullable=True` is this repo's own
+declaration having gone through a database and come back. That the crawl reads it correctly
+is a fact about the crawl. Whether the declaration is right about the column is a different
+question, and only the null counts speak to it.
 
-**Nothing crawls anything yet.** `pii/schema.py` is a hand written description of the
-warehouse `scripts/plant.py` then builds. Discovering that description from a live catalog
-is the next piece, and until it exists the schema and the database agree because one wrote
-the other.
+**The null rate is uniform across every column, which no real warehouse is.** A missing
+discharge date and a missing postal code have different causes and different rates, and
+modelling that would mean inventing a story per column. One rate is the honest version of
+having no such story.
+
+**A nulled discharge date does not retroactively change the claim derived from it.**
+`raw.claim.submitted_on` is computed from `raw.encounter.discharged_at` before the nulls are
+applied, so a claim can carry a date the warehouse no longer holds. The alternative is
+nulling before the derived values exist, which would mean the generator handling missing
+inputs everywhere.
+
+**The crawler is DuckDB only.** `duckdb_columns()` and `duckdb_constraints()` are engine
+specific catalog functions. `information_schema` would port further and does not carry the
+primary key information in a form this needs. A Snowflake crawl is a second adapter and it
+has not been written, let alone run.
+
+**Only primary keys are recovered, not foreign keys.** `raw.encounter.patient_id` points at
+`raw.patient` and nothing in the crawl knows that. Column level lineage is the next piece
+and that is where the reference matters.
 
 **The value arm reads a fixed sample of fifty rows and needs a two thirds majority.** Both
 of those are numbers I chose rather than measured.
