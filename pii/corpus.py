@@ -11,6 +11,21 @@ exact agreement between a prediction and a measurement over data built to satisf
 prediction measures nothing at all. Postal codes follow a decaying weight and birth dates
 follow an age curve, so the measured uniqueness and the uniform prediction are two
 different numbers and the gap between them is the informative part.
+
+It also writes nulls, which it did not before 09-18. Every column declared nullable in
+`pii/schema.py` used to carry a declaration nothing had ever exercised, so the suite could
+only ever check one direction of it. A check that a NOT NULL column holds no null is
+evidence. A check that a nullable column may hold one cannot fire against a corpus with no
+null in it anywhere. The nulls arrive in a post pass, after every value has been drawn and
+every derived value computed, for two reasons. The generator body never has to handle a
+missing input, and the surviving values stay byte identical to the ones drawn before this
+existed, so anything that moves in a published figure moved because of the nulls and not
+because the draw shifted.
+
+One consequence is stated rather than hidden. `raw.claim.submitted_on` is derived from the
+encounter discharge date, so nulling a discharge date afterwards leaves the claim carrying a
+date derived from a value the warehouse no longer holds. The corpus does not pretend the
+claim was filed without a discharge.
 """
 
 from __future__ import annotations
@@ -20,6 +35,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 from pii.rng import stream
+from pii.schema import tables_by_fqn
 
 # Small vocabularies. Invented, obviously. Real generators pull from census name files and
 # this one cannot, so the names are short lists and the README says so.
@@ -48,6 +64,23 @@ SEXES = ("F", "M", "X")
 # made the day's measurement trivially 1.0 and said nothing.
 POSTAL_CODES = tuple("1{:04d}".format(101 + 7 * i) for i in range(60))
 
+# Which generated table feeds which schema table. One definition, imported by the loader,
+# because a mapping written out twice is a second place for the answer to live and the
+# copies drift the first time a table is added.
+ROWS_FOR: Dict[str, str] = {
+    "raw.patient": "patients",
+    "raw.encounter": "encounters",
+    "raw.claim": "claims",
+    "raw.device_reading": "readings",
+}
+
+# Share of rows given a null in each nullable column. One rate for every column, which is
+# a number chosen rather than measured, and it is low enough that no aggregate moves much
+# and high enough that a thousand rows cannot miss a column by chance. The probability of
+# a 1,000 row column receiving none at this rate is about 2e-9, and the suite asserts the
+# observed count rather than trusting that arithmetic.
+NULL_RATE = 0.02
+
 NOTE_TEMPLATES = (
     "patient reports {sym} for {n} days, no fever",
     "follow up on {sym}, tolerating treatment",
@@ -63,6 +96,17 @@ class Corpus:
     encounters: List[dict]
     claims: List[dict]
     readings: List[dict]
+    # The date the ages were drawn against. It used to live only in `generate`'s signature
+    # while `summarise` carried its own copy of the same literal, so the two could drift
+    # and a mutant moving one of them was invisible. Carried on the corpus instead, which
+    # is the same fix as deriving the uniqueness sweep's column list from the taxonomy
+    # rather than writing it out a second time.
+    #
+    # Required rather than defaulted. It had a default of 2026-09-17 for about an hour and
+    # `generate` is the only thing that builds a Corpus and always passes the date
+    # explicitly, so the default was a third copy of the same literal that nothing could
+    # reach. Three mutants moved it and all three survived.
+    as_of: dt.date
 
     def counts(self) -> Dict[str, int]:
         return {
@@ -100,8 +144,60 @@ def _draw_birth_date(rnd, today: dt.date) -> dt.date:
     return dt.date(year, 1, 1) + dt.timedelta(days=day_of_year - 1)
 
 
+def nullable_columns() -> Tuple[Tuple[str, str], ...]:
+    """Every generated column the schema says may hold a null, as (table fqn, column).
+
+    Derived from `pii/schema.py` rather than listed here. A hand written copy of this list
+    would go stale the moment a column changed its flag, and it would go stale silently,
+    which is the failure the flags already had before they were exercised at all.
+    """
+    by_fqn = tables_by_fqn()
+    out = []
+    for fqn in sorted(ROWS_FOR):
+        for c in by_fqn[fqn].columns:
+            if c.nullable:
+                out.append((fqn, c.name))
+    return tuple(out)
+
+
+def _apply_nulls(corpus: "Corpus", seed: int, rate: float) -> None:
+    """Null out a share of each nullable column, in place.
+
+    One stream per column rather than one stream for the whole pass. With a single stream
+    the draws are consumed in whatever order the columns are visited, so adding a column
+    to the schema would move the nulls in every column after it. Per column streams mean a
+    new column cannot touch an existing one, which is the same argument `pii/rng.py` makes
+    for naming streams instead of numbering them.
+    """
+    if not 0.0 <= rate < 1.0:
+        raise ValueError("null rate must be at least 0 and below 1, got {}".format(rate))
+    if rate == 0.0:
+        return
+    for fqn, column in nullable_columns():
+        rows = getattr(corpus, ROWS_FOR[fqn])
+        rnd = stream(seed, "nulls:{}.{}".format(fqn, column))
+        for r in rows:
+            if rnd.random() < rate:
+                r[column] = None
+
+
+def null_counts(c: "Corpus") -> Dict[str, int]:
+    """Observed nulls per column, counted off the rows.
+
+    Counted rather than tallied during generation. A generator reporting how many nulls it
+    meant to write is not a measurement of how many are there, which is the same reason
+    the loader reads its row counts back out of the database.
+    """
+    out: Dict[str, int] = {}
+    for fqn, column in nullable_columns():
+        rows = getattr(c, ROWS_FOR[fqn])
+        out["{}.{}".format(fqn, column)] = sum(1 for r in rows if r[column] is None)
+    return out
+
+
 def generate(n_patients: int = 1000, seed: int = 20260917,
-             today: dt.date = dt.date(2026, 9, 17)) -> Corpus:
+             today: dt.date = dt.date(2026, 9, 17),
+             null_rate: float = NULL_RATE) -> Corpus:
     if n_patients < 1:
         raise ValueError("n_patients must be at least 1")
 
@@ -143,7 +239,11 @@ def generate(n_patients: int = 1000, seed: int = 20260917,
             eid += 1
             admitted = dt.datetime(2026, 1, 1) + dt.timedelta(
                 seconds=e_rnd.randint(0, 250 * 86400))
-            stay_h = max(1, int(e_rnd.triangular(1, 260, 30)))
+            # No clamp. It was max(1, ...) and the clamp was dead, because the triangular
+            # draw has a lower bound of 1 so the int is never below it. A mutant moving
+            # the clamp to 2 survived, which is what pointed at it. Deleting it leaves
+            # every generated value byte identical.
+            stay_h = int(e_rnd.triangular(1, 260, 30))
             sym = e_rnd.choice(SYMPTOMS)
             encounters.append({
                 "encounter_id": eid,
@@ -192,8 +292,10 @@ def generate(n_patients: int = 1000, seed: int = 20260917,
                     d_rnd.randint(0, 31), d_rnd.randint(0, 255), d_rnd.randint(1, 254)),
             })
 
-    return Corpus(patients=patients, encounters=encounters, claims=claims,
-                  readings=readings)
+    corpus = Corpus(patients=patients, encounters=encounters, claims=claims,
+                    readings=readings, as_of=today)
+    _apply_nulls(corpus, seed, null_rate)
+    return corpus
 
 
 def summarise(c: Corpus) -> Dict[str, object]:
@@ -203,28 +305,37 @@ def summarise(c: Corpus) -> Dict[str, object]:
     line by line and produces a population that could not exist, where the tell was one
     line of a summary nobody had asked for. Run it before building anything on the rows.
     """
+    # Every statistic below is over the rows that carry a value. A null is not a zero and
+    # it is not a category, and a summary that quietly folded one into either would be the
+    # first thing to mislead somebody reading this corpus. The null counts are reported
+    # separately so the denominator each figure used is visible rather than implied.
     ages = []
-    today = dt.date(2026, 9, 17)
+    today = c.as_of
     for p in c.patients:
         b = p["birth_date"]
+        if b is None:
+            continue
         ages.append(today.year - b.year - ((today.month, today.day) < (b.month, b.day)))
     per_patient: Dict[int, int] = {}
     for e in c.encounters:
         per_patient[e["patient_id"]] = per_patient.get(e["patient_id"], 0) + 1
 
+    postals = [p["postal_code"] for p in c.patients if p["postal_code"] is not None]
+
     return {
         "counts": c.counts(),
-        "distinct_postal": len({p["postal_code"] for p in c.patients}),
-        "distinct_birth_date": len({p["birth_date"] for p in c.patients}),
-        "distinct_sex": len({p["sex"] for p in c.patients}),
+        "distinct_postal": len(set(postals)),
+        "distinct_birth_date": len({p["birth_date"] for p in c.patients
+                                    if p["birth_date"] is not None}),
+        "distinct_sex": len({p["sex"] for p in c.patients if p["sex"] is not None}),
         "age_min": min(ages),
         "age_max": max(ages),
         "age_median": sorted(ages)[len(ages) // 2],
+        "ages_known": len(ages),
         "patients_with_no_encounter": len(c.patients) - len(per_patient),
         "max_encounters_per_patient": max(per_patient.values()) if per_patient else 0,
         "postal_head_share": round(
-            max(
-                sum(1 for p in c.patients if p["postal_code"] == pc)
-                for pc in {p["postal_code"] for p in c.patients}
-            ) / len(c.patients), 6),
+            max(postals.count(pc) for pc in set(postals)) / len(postals), 6),
+        "nulls_total": sum(null_counts(c).values()),
+        "nullable_columns": len(nullable_columns()),
     }
