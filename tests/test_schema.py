@@ -204,7 +204,14 @@ def check_the_schema_fingerprint_is_the_published_one():
     # act, and this is the speed bump. Every nullability and key flag is inside the hash,
     # which is what makes the ten of them that nothing else reads impossible to move by
     # accident.
-    assert schema.fingerprint() == "dcff0aa3e7a5", schema.fingerprint()
+    #
+    # It moved once, on 2026-09-18, from dcff0aa3e7a5 to this value. The speed bump did
+    # its job: analytics.encounter_daily.department was declared NOT NULL and is grouped
+    # out of a nullable source column, so the first null the corpus ever wrote failed the
+    # load on a constraint. A derived column cannot be stricter than the column it comes
+    # from. The old value is recorded here rather than overwritten, because a golden value
+    # quietly replaced is a golden value that has stopped being one.
+    assert schema.fingerprint() == "1501a19ca3d8", schema.fingerprint()
 
 
 def check_the_schema_fingerprint_moves_on_every_field_it_covers():

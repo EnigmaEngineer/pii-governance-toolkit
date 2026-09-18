@@ -168,7 +168,13 @@ TABLES: Tuple[Table, ...] = (
     )),
     Table("analytics", "encounter_daily", (
         Column("day", "DATE", nullable=False),
-        Column("department", "VARCHAR", nullable=False),
+        # Declared NOT NULL until 09-18 and it was wrong. The mart groups by
+        # raw.encounter.department, which is nullable, so the moment the corpus wrote its
+        # first null the load failed on a constraint. A derived column cannot be stricter
+        # than the column it is derived from, and nothing could see that while the corpus
+        # had no null in it anywhere. Moving this flag moved the published fingerprint,
+        # which is recorded beside the pin in the suite.
+        Column("department", "VARCHAR"),
         Column("postal_code", "VARCHAR"),
         Column("encounters", "BIGINT", nullable=False),
         Column("mean_length_of_stay_h", "DOUBLE"),

@@ -17,7 +17,8 @@ CREATE TABLE raw.patient (
   birth_date DATE,
   sex VARCHAR,
   ssn VARCHAR,
-  created_at TIMESTAMP NOT NULL
+  created_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (patient_id)
 );
 
 CREATE TABLE raw.encounter (
@@ -29,7 +30,8 @@ CREATE TABLE raw.encounter (
   attending_npi VARCHAR,
   primary_diagnosis VARCHAR,
   clinical_note VARCHAR,
-  disposition VARCHAR
+  disposition VARCHAR,
+  PRIMARY KEY (encounter_id)
 );
 
 CREATE TABLE raw.claim (
@@ -40,7 +42,8 @@ CREATE TABLE raw.claim (
   billed_amount DECIMAL(12,2),
   paid_amount DECIMAL(12,2),
   claim_status VARCHAR,
-  submitted_on DATE
+  submitted_on DATE,
+  PRIMARY KEY (claim_id)
 );
 
 CREATE TABLE raw.device_reading (
@@ -50,12 +53,13 @@ CREATE TABLE raw.device_reading (
   taken_at TIMESTAMP NOT NULL,
   metric VARCHAR,
   reading_value DOUBLE,
-  source_ip VARCHAR
+  source_ip VARCHAR,
+  PRIMARY KEY (reading_id)
 );
 
 CREATE TABLE analytics.encounter_daily (
   day DATE NOT NULL,
-  department VARCHAR NOT NULL,
+  department VARCHAR,
   postal_code VARCHAR,
   encounters BIGINT NOT NULL,
   mean_length_of_stay_h DOUBLE

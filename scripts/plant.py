@@ -24,25 +24,34 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pii.corpus import generate, summarise  # noqa: E402
+from pii.corpus import ROWS_FOR, generate, null_counts, summarise  # noqa: E402
 from pii.schema import PLANTED, TABLES, check_planting_is_total  # noqa: E402
 from pii.taxonomy import TAXONOMY  # noqa: E402
 
-ROWS_FOR = {
-    "raw.patient": "patients",
-    "raw.encounter": "encounters",
-    "raw.claim": "claims",
-    "raw.device_reading": "readings",
-}
-
 
 def ddl_for(table) -> str:
+    """The DDL for one table, including its primary key.
+
+    The key used to be left out, and that made `Column.is_key` a flag only this repo knew
+    about. It is one of the five fields in `schema.fingerprint()`, so a crawler reading the
+    catalog back could recover four of them and had no way to recover the fifth, which
+    means the pinned fingerprint was unreachable for a reason that had nothing to do with
+    the crawler. Declaring the key puts it in the catalog where a crawl can find it.
+
+    It is not free. A primary key in DuckDB is enforced, so the loader now refuses a
+    duplicate id rather than accepting one, which is a stricter warehouse than the one the
+    09-17 figures came off. That is the right direction and it is a change in behaviour
+    rather than a change in documentation.
+    """
     cols = []
     for c in table.columns:
         line = "  {} {}".format(c.name, c.sql_type)
         if not c.nullable:
             line += " NOT NULL"
         cols.append(line)
+    keys = [c.name for c in table.columns if c.is_key]
+    if keys:
+        cols.append("  PRIMARY KEY ({})".format(", ".join(keys)))
     return "CREATE TABLE {} (\n{}\n);".format(table.fqn, ",\n".join(cols))
 
 
@@ -148,9 +157,14 @@ def main() -> int:
     s = summarise(corpus)
     print("generated, all of it synthetic")
     for k in ("counts", "distinct_postal", "distinct_birth_date", "age_min",
-              "age_median", "age_max", "patients_with_no_encounter",
-              "max_encounters_per_patient"):
+              "age_median", "age_max", "ages_known", "patients_with_no_encounter",
+              "max_encounters_per_patient", "nullable_columns", "nulls_total"):
         print("  {:<28} {}".format(k, s[k]))
+
+    # Every nullable column has to hold at least one null or its flag is still a
+    # declaration nothing exercised, which was the state the whole corpus was in before.
+    empty = [k for k, v in null_counts(corpus).items() if v == 0]
+    print("  {:<28} {}".format("nullable, never null", ", ".join(empty) or "none"))
 
     n = emit_ddl(args.ddl)
     print("wrote {} table definitions to {}".format(n, args.ddl))
