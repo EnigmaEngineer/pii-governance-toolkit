@@ -115,6 +115,11 @@ def generalise_postal(value: str, digits: int) -> str:
     """
     if digits < 1:
         raise ValueError("digits must be at least 1")
+    if value is None:
+        raise ValueError(
+            "cannot generalise a null postal code. What masking does with a missing "
+            "value is a policy decision and it is not this function's to make quietly"
+        )
     if digits > len(value):
         raise ValueError(
             "cannot generalise {} to {} digits, it has {}".format(
@@ -125,4 +130,96 @@ def generalise_postal(value: str, digits: int) -> str:
 
 def coarsen_date_to_year(value) -> int:
     """The other permitted generalisation. Year is not an identifier, a date is."""
+    if value is None:
+        raise ValueError(
+            "cannot coarsen a null date. Same reason as the postal code above"
+        )
     return value.year
+
+
+def complete_rows(rows: Sequence[dict], columns: Sequence[str]) -> Tuple[dict, ...]:
+    """Rows carrying a value in every one of the given columns."""
+    return tuple(r for r in rows if all(r[c] is not None for c in columns))
+
+
+@dataclass(frozen=True)
+class NullEffect:
+    """What the nulls are doing to a uniqueness figure, measured both ways.
+
+    A null is missing data and it is not anonymity. Nobody is protected by a warehouse
+    failing to record their postal code, because somebody holding that postal code from
+    elsewhere is not stopped by a gap in this table. Every uniqueness metric in this module
+    disagrees, because `Counter` treats `None` as a value like any other.
+
+    The first version of this docstring said that made the metric read safer. That was
+    written before it was measured and it is wrong about half the cases. Which way the
+    figure moves depends on the null rate and on how much collision the combination had to
+    begin with.
+
+    A rare null is an uncommon value, so it tends to isolate a row rather than pool it. On
+    `sex + postal_code`, where 97 percent of people share a cell with somebody, a 2 percent
+    null rate takes the measured unique share UP from 0.0280 to 0.0380. The naive figure
+    reads less safe, not safer.
+
+    A common null is a crowded cell, so it pools. The same pair at a 40 percent rate reads
+    0.0600 against 0.1200. The sign flips somewhere above 0.20.
+
+    And on a combination that is already fully unique the honest figure is pinned at 1.0000
+    and cannot rise, so pooling is the only thing left and the naive figure can only read
+    safer. `sex + postal_code + birth_date` goes 1.0000 to 0.9940 at 2 percent and to
+    0.8400 at 20.
+
+    So both are reported and neither is presented as the answer. `all_rows` is what a tool
+    prints if nobody thought about nulls. `complete_only` is the figure over the rows that
+    carry every column, and it is not a neutral correction either: it shrinks the
+    population, and uniqueness depends on how many people are in it. At a 60 percent rate
+    it reads 0.2273 off 154 survivors. Two answers, both moving, for different reasons.
+    """
+
+    all_rows: Uniqueness
+    complete_only: Uniqueness
+    n_rows: int
+    n_complete: int
+
+    @property
+    def n_incomplete(self) -> int:
+        return self.n_rows - self.n_complete
+
+    @property
+    def flattery(self) -> float:
+        """Honest share minus naive share.
+
+        Positive means treating nulls as values made the figure read safer than it is.
+        Negative means it read less safe. Both happen and the name is deliberately only
+        half right, because the quantity is signed and a reader who assumes one direction
+        is the reader this whole class exists for.
+        """
+        return (self.complete_only.measured_unique_share
+                - self.all_rows.measured_unique_share)
+
+
+def flattery_changes_sign(effects: Sequence[NullEffect]) -> bool:
+    """Does the null effect run both ways across these measurements.
+
+    The claim that the direction is a property of the rate rather than of the data is
+    decided here rather than in a report script, so a mutation pass can reach it. Zeroes
+    are not a direction and do not count as either side.
+    """
+    signs = {e.flattery > 0 for e in effects if e.flattery != 0.0}
+    return len(signs) == 2
+
+
+def measure_with_null_effect(rows: Sequence[dict],
+                             columns: Sequence[str]) -> NullEffect:
+    complete = complete_rows(rows, columns)
+    if not complete:
+        raise ValueError(
+            "every row is missing at least one of {}, so there is no complete "
+            "population to measure".format(list(columns))
+        )
+    return NullEffect(
+        all_rows=measure(rows, columns),
+        complete_only=measure(complete, columns),
+        n_rows=len(rows),
+        n_complete=len(complete),
+    )

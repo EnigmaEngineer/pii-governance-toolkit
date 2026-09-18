@@ -160,3 +160,121 @@ def check_cardinalities_counts_distinct_values_per_column():
     rows = [{"a": 1, "b": "x"}, {"a": 1, "b": "y"}, {"a": 2, "b": "y"}]
     assert reidentify.cardinalities(rows, ["a", "b"]) == {"a": 2, "b": 2}
     assert _raises(lambda: reidentify.cardinalities(rows, []), ValueError)
+
+
+# ot-069. The corpus writes nulls now, so every function here meets one. A null is
+# missing data and it is not anonymity, and these are the checks that stop the module
+# from quietly treating it as either a zero or a category.
+
+
+def check_a_generaliser_refuses_a_null_by_message_and_not_by_accident():
+    # Assert the message, not the type. len(None) raises TypeError on its own and
+    # value.year raises AttributeError on its own, so deleting either guard would leave a
+    # test asserting "it raises" perfectly green. That is the 08-02 lesson arriving on a
+    # different module.
+    def says(fn):
+        try:
+            fn()
+        except Exception as exc:
+            return "{}: {}".format(type(exc).__name__, exc)
+        return "did not raise"
+
+    postal = says(lambda: reidentify.generalise_postal(None, 3))
+    assert postal.startswith("ValueError"), postal
+    assert "null" in postal, postal
+
+    date = says(lambda: reidentify.coarsen_date_to_year(None))
+    assert date.startswith("ValueError"), date
+    assert "null" in date, date
+
+
+def check_complete_rows_keeps_only_the_rows_carrying_every_column():
+    rows = [
+        {"a": 1, "b": "x"},
+        {"a": None, "b": "x"},
+        {"a": 1, "b": None},
+        {"a": None, "b": None},
+        {"a": 2, "b": "y"},
+    ]
+    assert len(reidentify.complete_rows(rows, ["a", "b"])) == 2
+    assert len(reidentify.complete_rows(rows, ["a"])) == 3
+    assert len(reidentify.complete_rows(rows, ["b"])) == 3
+
+
+def check_a_null_is_counted_as_a_cell_by_the_naive_measure():
+    # Not a bug report, a statement of what Counter does, pinned so that the difference
+    # between the two figures has a cause a reader can check. Three rows sharing a null
+    # postal code are one cell of three and none of them counts as unique.
+    rows = ([{"pc": None}] * 3) + [{"pc": "a"}, {"pc": "b"}]
+    u = reidentify.measure(rows, ["pc"])
+    assert u.distinct_combinations == 3
+    assert u.unique_rows == 2
+    assert u.k_anonymity == 1
+
+
+def check_the_null_effect_reports_both_populations_and_their_sizes():
+    rows = ([{"pc": None, "sex": "F"}] * 4) + [
+        {"pc": "a", "sex": "F"}, {"pc": "b", "sex": "M"}, {"pc": "c", "sex": "M"}]
+    e = reidentify.measure_with_null_effect(rows, ["pc", "sex"])
+    assert e.n_rows == 7
+    assert e.n_complete == 3
+    assert e.n_incomplete == 4
+    assert e.all_rows.n_rows == 7
+    assert e.complete_only.n_rows == 3
+
+
+def check_the_null_effect_refuses_a_population_with_no_complete_row():
+    # Nothing to check is a finding. If every row is missing something there is no honest
+    # figure to compare the naive one against, and returning the naive one alone would be
+    # the worst available answer.
+    rows = [{"pc": None, "sex": "F"}, {"pc": None, "sex": "M"}]
+    assert _raises(lambda: reidentify.measure_with_null_effect(rows, ["pc", "sex"]),
+                   ValueError)
+
+
+def check_a_rare_null_makes_a_row_read_more_unique_not_less():
+    # The direction that contradicts the obvious reading, built as a fixture rather than
+    # asserted off the corpus. Four people share a postal code, one of them is missing it.
+    # That one becomes the only member of the null cell, so the naive figure counts it as
+    # unique when nothing about them changed.
+    rows = [{"pc": "a"}, {"pc": "a"}, {"pc": "a"}, {"pc": None}]
+    e = reidentify.measure_with_null_effect(rows, ["pc"])
+    assert e.all_rows.measured_unique_share == 0.25
+    assert e.complete_only.measured_unique_share == 0.0
+    assert e.flattery < 0, e.flattery
+
+
+def check_a_common_null_makes_a_row_read_less_unique():
+    # And the other direction, which is the one people expect. Three people missing the
+    # postal code pool into one cell, and the two who have it stay unique.
+    rows = [{"pc": None}, {"pc": None}, {"pc": None}, {"pc": "a"}, {"pc": "b"}]
+    e = reidentify.measure_with_null_effect(rows, ["pc"])
+    assert e.all_rows.measured_unique_share == 0.4
+    assert e.complete_only.measured_unique_share == 1.0
+    assert e.flattery > 0, e.flattery
+
+
+def check_the_sign_of_the_null_effect_is_reported_as_changing_only_when_it_does():
+    rare = reidentify.measure_with_null_effect(
+        [{"pc": "a"}, {"pc": "a"}, {"pc": "a"}, {"pc": None}], ["pc"])
+    common = reidentify.measure_with_null_effect(
+        [{"pc": None}, {"pc": None}, {"pc": None}, {"pc": "a"}, {"pc": "b"}], ["pc"])
+    assert reidentify.flattery_changes_sign([rare, common]) is True
+    assert reidentify.flattery_changes_sign([rare, rare]) is False
+    assert reidentify.flattery_changes_sign([common]) is False
+    # A zero is not a direction, so a run of them is not a sign change.
+    flat = reidentify.measure_with_null_effect([{"pc": "a"}, {"pc": "b"}], ["pc"])
+    assert flat.flattery == 0.0
+    assert reidentify.flattery_changes_sign([flat, flat]) is False
+    assert reidentify.flattery_changes_sign([flat, rare]) is False
+
+
+def check_a_published_measurement_cannot_be_edited_after_the_fact():
+    # frozen=True on Uniqueness mutated to frozen=False and survived. These objects are
+    # what the README quotes, so a caller being able to rewrite a share after it was
+    # measured is the one thing the dataclass is protecting against.
+    u = reidentify.measure([{"a": 1}, {"a": 2}], ["a"])
+    assert _raises(lambda: setattr(u, "measured_unique_share", 0.0), Exception)
+    assert _raises(lambda: setattr(u, "n_rows", 99), Exception)
+    e = reidentify.measure_with_null_effect([{"a": 1}, {"a": None}], ["a"])
+    assert _raises(lambda: setattr(e, "n_complete", 0), Exception)

@@ -150,9 +150,18 @@ def section_uniqueness(corpus):
     cols = sorted(cols, key=lambda c: card[c])
     print("\nquasi identifiers on raw.patient, derived: {}".format(", ".join(cols)))
 
+    # The corpus writes nulls since 09-18, so this sweep has to say which population it
+    # is about. It is the rows carrying all three columns. A null is missing data and not
+    # anonymity, and counting it as a cell moves every figure below in a direction that
+    # depends on the null rate rather than on anybody being harder to find. That
+    # comparison is measured in scripts/crawl_probe.py and is not folded in here.
+    people = reidentify.complete_rows(corpus.patients, cols)
+    print("rows carrying all three    {} of {}, {} dropped".format(
+        len(people), len(corpus.patients), len(corpus.patients) - len(people)))
+
     print("\n{:<34} {:>7} {:>9} {:>10} {:>10} {:>10}".format(
         "quasi identifiers", "k", "cells", "measured", "uniform", "gap"))
-    for u in reidentify.sweep(corpus.patients, cols):
+    for u in reidentify.sweep(people, cols):
         used = " + ".join(cols[:u.n_columns])
         print("{:<34} {:>7} {:>9} {:>10.4f} {:>10.4f} {:>+10.4f}".format(
             used, u.k_anonymity, u.cardinality_product,
@@ -160,7 +169,7 @@ def section_uniqueness(corpus):
 
     print("\nthe same three after truncating the postal code and the date")
     coarse = []
-    for p in corpus.patients:
+    for p in people:
         coarse.append({
             "sex": p["sex"],
             "postal_code": reidentify.generalise_postal(p["postal_code"], 3),
@@ -171,8 +180,12 @@ def section_uniqueness(corpus):
         "sex + postal 3 + birth year", u.k_anonymity, u.cardinality_product,
         u.measured_unique_share, u.uniform_unique_share, u.shape_effect))
 
+    # The same population as the table above, which means the rows that carry a postal
+    # code. Handed the whole corpus it counted the patients missing one as a sixth three
+    # digit area of 54 people, so the clause B question was being asked about a group that
+    # is not a geographic area at all. A null is not a place.
     floor = safeharbor.postal_3_floor(
-        tuple(p["postal_code"] for p in corpus.patients))
+        tuple(p["postal_code"] for p in people))
     print("\nis that row evidence about Safe Harbor  {}".format(
         "yes" if floor.applies else "no"))
     print("  three digit areas                    {}".format(floor.groups))
