@@ -168,7 +168,7 @@ def section_controls(con, crawled):
 
     # A dropped table has to be caught from the declared side, and an extra one from the
     # crawled side. One direction is the easy half and it is the half that passes by
-    # accident, which is the mistake the 09-17 clause mapping made.
+    # accident, which is the mistake the clause mapping made.
     short = crawler.Crawl(crawled.tables[1:], crawled.key_columns,
                           crawled.engine, crawled.engine_version)
     missing = [d for d in crawler.compare(short) if d.field == "table"]

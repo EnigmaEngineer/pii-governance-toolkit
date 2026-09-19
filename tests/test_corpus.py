@@ -208,7 +208,7 @@ def check_growing_the_population_does_not_change_the_rows_already_drawn():
     assert large.patients[:20] == small.patients
 
 
-# ot-069. Nullability was declared on 09-17 and exercised by nothing, because the
+# Nullability was declared and exercised by nothing, because the
 # generator never wrote a null anywhere. The suite could check one direction of it, that a
 # NOT NULL column holds no null, and that direction is the easy one. These are the other
 # direction, and they are the reason the corpus moved.
@@ -260,7 +260,7 @@ def check_the_observed_null_share_is_near_the_rate_it_was_asked_for():
         assert abs(share - NULL_RATE) < 0.015, (address, share)
 
 
-# Digests of the default corpus as it stood on 2026-09-17, before nulls existed, taken
+# Digests of the default corpus as it stood before nulls existed, taken
 # off the tree at commit 599f817 and pinned here. They are what makes the post pass claim
 # checkable: turning the rate off has to give back that corpus and not merely a corpus
 # with no nulls in it. Without them the check below would be satisfied by any generator
@@ -284,7 +284,7 @@ def _digest(rows):
 
 def check_a_zero_rate_gives_back_the_corpus_that_existed_before_nulls():
     # The control for the whole change. If this fails then the draw shifted, and every
-    # figure that moved on 09-18 moved for two reasons at once rather than one.
+    # figure the nulls moved would have moved for two reasons at once rather than one.
     a = generate(null_rate=0.0)
     for name, expected in sorted(BEFORE_NULLS.items()):
         assert _digest(getattr(a, name)) == expected, name
@@ -331,7 +331,7 @@ def check_a_summary_statistic_is_over_the_values_that_exist():
     assert with_nulls["nulls_total"] > 0
 
 
-# Written against named survivors of the 09-18 mutation pass. Each one killed a mutant
+# Written against named survivors of a mutation pass. Each one killed a mutant
 # that had been green, and the mutant is named so that deleting the check later is a
 # visible decision rather than a tidy-up.
 
@@ -347,7 +347,7 @@ def check_one_patient_is_a_legal_population():
 
 
 def check_the_summary_uses_the_date_the_corpus_was_drawn_against():
-    # summarise carried its own copy of 2026-09-17 while generate took the same date as a
+    # summarise carried its own copy of the date while generate took the same one as a
     # parameter, so three mutants could move one of them and nothing noticed. The date is
     # on the corpus now and this is the check that says so.
     # The first version of this asserted that a later date gives larger ages, and that is

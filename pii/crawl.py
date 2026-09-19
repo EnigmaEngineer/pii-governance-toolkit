@@ -1,6 +1,6 @@
 """Recover the warehouse schema from a live catalog.
 
-This module exists to break a circularity the README named on 09-17. `pii/schema.py`
+This module exists to break a circularity the README named. `pii/schema.py`
 is a hand written description of the warehouse `scripts/plant.py` then builds, so any check
 that the two agree is a check that one of them wrote the other. Nothing was learned by
 running it.
@@ -184,7 +184,7 @@ def compare(crawled: Crawl) -> Tuple[Difference, ...]:
     Both directions because one direction is the easy half. Walking the declared schema and
     looking each column up in the crawl finds anything the crawl missed and is blind to
     anything the warehouse holds that nobody declared, which on a real warehouse is most of
-    what a governance tool is for. The same mistake the 09-17 mapping made, where every
+    what a governance tool is for. The same mistake the clause mapping made, where every
     clause had a category and not every category had a clause.
     """
     declared = tables_by_fqn()
@@ -222,7 +222,7 @@ def compare(crawled: Crawl) -> Tuple[Difference, ...]:
         # the tables, so reversing the table order leaves the hash identical. It does not
         # sort the columns, so swapping two columns inside a table moves it. `sort_keys`
         # in `schema.fingerprint` sorts the keys of each row dict and has no opinion about
-        # the order of the list. Measured both ways on 09-18 after a check written on the
+        # the order of the list. Measured both ways after a check written on the
         # opposite assumption failed.
         d_order = [c.name for c in declared[fqn].columns]
         f_order = [c.name for c in found[fqn].columns]
@@ -269,7 +269,7 @@ class NullabilityVerdict:
         """Declared nullable and nothing has ever put a null in it.
 
         Not a defect. It is the absence of evidence, and the reason it is named is that
-        on 09-17 there were 26 of these and the repo read as though it had been checked.
+        26 columns were in this state at once and the repo read as though it had been checked.
         """
         return self.crawled_nullable and self.nulls_observed == 0
 

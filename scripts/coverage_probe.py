@@ -150,7 +150,7 @@ def section_uniqueness(corpus):
     cols = sorted(cols, key=lambda c: card[c])
     print("\nquasi identifiers on raw.patient, derived: {}".format(", ".join(cols)))
 
-    # The corpus writes nulls since 09-18, so this sweep has to say which population it
+    # The corpus writes nulls, so this sweep has to say which population it
     # is about. It is the rows carrying all three columns. A null is missing data and not
     # anonymity, and counting it as a cell moves every figure below in a direction that
     # depends on the null rate rather than on anybody being harder to find. That

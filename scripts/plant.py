@@ -40,7 +40,7 @@ def ddl_for(table) -> str:
 
     It is not free. A primary key in DuckDB is enforced, so the loader now refuses a
     duplicate id rather than accepting one, which is a stricter warehouse than the one the
-    09-17 figures came off. That is the right direction and it is a change in behaviour
+    earlier figures came off. That is the right direction and it is a change in behaviour
     rather than a change in documentation.
     """
     cols = []

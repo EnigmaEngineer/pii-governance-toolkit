@@ -162,7 +162,7 @@ def check_cardinalities_counts_distinct_values_per_column():
     assert _raises(lambda: reidentify.cardinalities(rows, []), ValueError)
 
 
-# ot-069. The corpus writes nulls now, so every function here meets one. A null is
+# The corpus writes nulls now, so every function here meets one. A null is
 # missing data and it is not anonymity, and these are the checks that stop the module
 # from quietly treating it as either a zero or a category.
 

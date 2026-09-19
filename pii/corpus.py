@@ -12,7 +12,7 @@ prediction measures nothing at all. Postal codes follow a decaying weight and bi
 follow an age curve, so the measured uniqueness and the uniform prediction are two
 different numbers and the gap between them is the informative part.
 
-It also writes nulls, which it did not before 09-18. Every column declared nullable in
+It also writes nulls, which it did not at first. Every column declared nullable in
 `pii/schema.py` used to carry a declaration nothing had ever exercised, so the suite could
 only ever check one direction of it. A check that a NOT NULL column holds no null is
 evidence. A check that a nullable column may hold one cannot fire against a corpus with no
@@ -102,7 +102,7 @@ class Corpus:
     # is the same fix as deriving the uniqueness sweep's column list from the taxonomy
     # rather than writing it out a second time.
     #
-    # Required rather than defaulted. It had a default of 2026-09-17 for about an hour and
+    # Required rather than defaulted. It carried a default date for about an hour and
     # `generate` is the only thing that builds a Corpus and always passes the date
     # explicitly, so the default was a third copy of the same literal that nothing could
     # reach. Three mutants moved it and all three survived.

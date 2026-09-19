@@ -152,7 +152,7 @@ def check_the_comparison_catches_a_changed_type():
 
 def check_the_comparison_looks_both_ways():
     # A table the warehouse holds and nobody declared is the case that matters most on a
-    # real warehouse and is the easiest half to leave out. Same shape as the 09-17
+    # real warehouse and is the easiest half to leave out. Same shape as the
     # mapping, where every clause had a category and not every category had a clause.
     crawled, _ = _crawl()
     short = crawler.Crawl(crawled.tables[1:], crawled.key_columns,
@@ -233,7 +233,7 @@ def check_the_nullability_grader_reads_rows_and_judges_both_directions():
 
 
 def check_an_unexercised_nullable_column_is_named_rather_than_passed():
-    # The state the whole repo was in before 09-18, reproduced deliberately. A nullable
+    # The state the whole repo was in before the corpus wrote a null, reproduced deliberately. A nullable
     # column nothing has ever put a null in is not a defect and it is not evidence
     # either, and the grader has to say which of those it is looking at.
     import duckdb
@@ -405,7 +405,7 @@ def check_a_crawled_fact_cannot_be_edited_after_it_was_read():
 
 
 def check_the_module_exposes_no_convenience_wrapper_nothing_calls():
-    # first_difference was deleted on 09-18 after a mutant changing which element it
+    # first_difference was deleted after a mutant changing which element it
     # returned survived, because nothing anywhere called it. Pinned so it does not come
     # back as a helper somebody adds for a caller that still does not exist.
     assert not hasattr(crawler, "first_difference")

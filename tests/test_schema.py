@@ -205,7 +205,7 @@ def check_the_schema_fingerprint_is_the_published_one():
     # which is what makes the ten of them that nothing else reads impossible to move by
     # accident.
     #
-    # It moved once, on 2026-09-18, from dcff0aa3e7a5 to this value. The speed bump did
+    # It moved once, from dcff0aa3e7a5 to this value. The speed bump did
     # its job: analytics.encounter_daily.department was declared NOT NULL and is grouped
     # out of a nullable source column, so the first null the corpus ever wrote failed the
     # load on a constraint. A derived column cannot be stricter than the column it comes
