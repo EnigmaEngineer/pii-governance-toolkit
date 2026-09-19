@@ -25,8 +25,9 @@ def main() -> int:
         print("FAIL: this runner needs duckdb and it is not importable: {}".format(exc))
         print("      pip install -r requirements.txt")
         return 2
-    return run_checks(MODULES + ["tests.test_warehouse", "tests.test_crawl"],
-                      verbose="-v" in sys.argv)
+    return run_checks(
+        MODULES + ["tests.test_warehouse", "tests.test_crawl", "tests.test_profile"],
+        verbose="-v" in sys.argv)
 
 
 if __name__ == "__main__":

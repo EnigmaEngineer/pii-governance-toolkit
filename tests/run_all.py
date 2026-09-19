@@ -25,6 +25,7 @@ MODULES = [
     "tests.test_naive",
     "tests.test_reidentify",
     "tests.test_coverage",
+    "tests.test_classify",
     "tests.test_deps",
 ]
 
