@@ -3,19 +3,21 @@
 Scan a warehouse, work out which columns hold personal data, generate the masking policy
 that follows, and produce an audit trail somebody would accept. This is the classification
 layer: a taxonomy with three fields rather than one label, a sample warehouse with personal
-data planted in it on purpose, and a measurement of how much an obvious scan walks past.
+data planted in it on purpose, a classifier that returns a confidence with every answer,
+and a measurement of what that confidence is actually worth.
 
 ```
 python3 scripts/coverage_probe.py
 ```
 
-That needs nothing but the standard library. Building the warehouse and crawling it back
-needs DuckDB.
+That needs nothing but the standard library. Building the warehouse, crawling it back and
+classifying it need DuckDB.
 
 ```
 pip install -r requirements.txt
 python3 scripts/plant.py --db /tmp/pii.duckdb --key
 python3 scripts/crawl_probe.py --db /tmp/pii.duckdb
+python3 scripts/classify_probe.py --db /tmp/pii.duckdb
 ```
 
 ## What is here
@@ -26,6 +28,8 @@ pii/safeharbor.py   the HIPAA Safe Harbor clause list, as an external answer key
 pii/schema.py       the sample warehouse and its planted labels
 pii/corpus.py       generated rows for that schema, nulls included
 pii/crawl.py        recovering the schema from a live catalog
+pii/profile.py      counting things about a column without reading one
+pii/classify.py     three arms, a confidence, and three bands
 pii/naive.py        the obvious name and regex scan, kept as a floor to measure against
 pii/coverage.py     grading the floor against the clause list
 pii/reidentify.py   uniqueness and k anonymity over quasi identifiers
@@ -52,6 +56,12 @@ pii/rng.py          named random streams
                     pii/crawl.py                           |
                     reads the catalog back                 |
                          |                                 |
+                    pii/profile.py                         |
+                    counts, never values                   |
+                         |                                 |
+                    pii/classify.py                        |
+                    3 arms, confidence, bands              |
+                         |                                 |
                          +----------------+----------------+
                                           |
                           pii/coverage.py   pii/reidentify.py
@@ -60,7 +70,7 @@ pii/rng.py          named random streams
 
 ## The schema is no longer its own witness
 
-The 09-17 tree shipped a problem in this file: `pii/schema.py` was a hand written description of
+An earlier version of this repo shipped a problem here: `pii/schema.py` was a hand written description of
 the warehouse `scripts/plant.py` then built, so any check that the two agreed was a check
 that one of them had written the other. Nothing was learned by running it.
 
@@ -100,7 +110,7 @@ difference, because a reordered table and a changed one are not the same event.
 
 ## Nullability is a claim about the data now
 
-The corpus writes nulls. It did not before 09-18, and that made every nullable flag a
+The corpus writes nulls. It did not at first, and while it did not every nullable flag was a
 declaration nothing had ever exercised: the suite could check that a NOT NULL column holds
 no null, which is the easy direction, and the reverse reading had no evidence at all in
 either direction.
@@ -130,8 +140,8 @@ far and high enough that a thousand rows are very unlikely to miss a column by c
 the suite asserts the observed count rather than trusting that arithmetic.
 
 **The nulls are applied in a post pass, after every value is drawn.** So `generate` with the
-rate turned off reproduces the 09-17 corpus byte for byte, and the suite pins the four
-digests to prove it. That matters because it makes every figure that moved on 09-18
+rate turned off reproduces the corpus as it stood before nulls, byte for byte, and the suite pins the four
+digests to prove it. That matters because it makes every figure the nulls moved
 attributable to the nulls rather than to a shifted draw.
 
 **The first null broke the load, and the schema was wrong rather than the corpus.**
@@ -308,11 +318,197 @@ rather than raising whatever the language happens to raise on `None`. What a mas
 should do with a missing value belongs with the masking work and is not something a generaliser gets
 to make quietly.
 
+## The confidence is the product, and the recall is not
+
+Three arms feed one score. The column name read as tokens, the values counted by the
+database, and the catalog metadata. Each arm produces weighted evidence and the strongest
+category wins, so nothing is decided by whichever rule happened to be checked first.
+
+Against the substring floor, from `scripts/classify_probe.py`:
+
+```
+                                   substring floor   classifier
+in Safe Harbor scope, found               13/19        19/19
+right category                            11/19        19/19
+masked with no human in the loop    all of them        12/19
+flagged and planted not personal              1            2
+```
+
+**Read the first row and then discount it.** I wrote the token rules with the answer key
+open, so 19 of 19 is a report on my memory rather than on the method. Any classifier
+written the same way gets the same number. It is printed because leaving it out would look
+like hiding it.
+
+The third row is the one that is not circular. The floor has no confidence, so every answer
+it gives carries the same authority: either all 13 columns it finds are masked without
+anybody looking, or none of them are. This classifier masks 12 and sends the rest to a
+person, and the question is whether it sends the right ones.
+
+```
+accept band  15 columns, 0 of them planted not personal
+review band   9 columns, 2 of them planted not personal
+ignored      18 columns, 0 of them in Safe Harbor scope
+
+lowest column masked with no human      0.7500
+highest column the classifier got wrong 0.7250
+margin                                  0.0250
+```
+
+Both mistakes land in the band that goes to a human and nothing wrong is masked
+automatically. That is the result the design is for and the margin is what it rests on.
+Twenty five thousandths, on a scale from zero to one, over forty two columns. I picked the
+accept threshold with both of those numbers on the screen, so the separation is a fact
+about this warehouse rather than a property of the method.
+
+The sweep is in the probe. Below 0.73 a column that is not personal starts getting masked,
+and the count of wrongly masked columns is 1 or 2 all the way down to 0.40.
+
+## What the classifier gets wrong, and why neither is fixable here
+
+```
+raw.patient.created_at                         event_date               0.72 review    NOT PERSONAL
+raw.claim.payer_name                           person_name              0.40 review    NOT PERSONAL
+```
+
+`created_at` is the row's load time. `admitted_at`, `discharged_at` and `taken_at` are
+dates tied to a patient, and clause C makes every element of those an identifier except the
+year. All four are timestamps, all four end in `_at`, and three of them have a distinct
+count equal to the row count. **No property of the column separates them.** What separates
+them is where the value came from, and this classifier cannot see that.
+
+One of the two does have a table level answer. A date is tied to an individual when the
+table is about individuals, so a temporal signal is dropped in any table where nothing else
+names a person outright. That removes `analytics.encounter_daily.day`, which is a reporting
+grain rather than anybody's date. It cannot remove `created_at`, which sits in the patient
+table beside an email address and a national identifier.
+
+That rule has a threshold in it and the threshold bit immediately:
+
+```
+ bar     found   masked    wrong  tables treated as about people
+0.35     19/19       12        2  4
+0.60     17/19       12        2  3
+0.75     16/19       12        2  2
+```
+
+At 0.75 `raw.claim` stops counting as a table about people. Its only direct identifier is a
+membership number scoring 0.70, five hundredths under. `raw.claim.submitted_on` then loses
+its only evidence and disappears from the results, so one column sitting in the review band
+deleted a different column's answer. The bar is the review floor for that reason. Demanding
+certainty that a table is about people before conceding that it is runs the wrong way for a
+tool whose job is to find personal data.
+
+## Two of the three arms decide almost nothing
+
+Removing one arm at a time and counting how many band assignments move:
+
+```
+arms                       found  masked    wrong   bands moved
+all three                  19/19      12        2             0
+name only                  19/19      13        2             2
+value only                  5/19       3        0            20
+structure only              0/19       0        0            24
+without name                9/19       3        1            16
+without value              19/19      13        2             2
+without structure          19/19      12        2             0
+```
+
+**The structure arm moves no band anywhere.** It changes the number printed beside five
+columns and changes no decision about any of them. The value arm moves two. Take the name
+arm away and the classifier finds 9 of 19 instead of 19.
+
+So on this warehouse the confidence is mostly a restatement of how sure I was when I wrote
+the token list. That is not an argument for deleting the other two arms. It is an argument
+that a warehouse with meaningful column names is the easy case, and the honest way to show
+what the other arms are worth is to take the names away:
+
+```
+in Safe Harbor scope, found        9/19
+right category                     7/19
+masked with no human in the loop   3/19
+
+  raw.patient.c12              was ssn                    called national_id            0.89
+  raw.patient.c05              was email                  called email                  0.88
+  raw.device_reading.c07       was source_ip              called ip_address             0.83
+  raw.encounter.c06            was attending_npi          called phone                  0.69  planted licence_number
+  raw.patient.c06              was phone                  called phone                  0.68
+  raw.device_reading.c04       was taken_at               called event_date             0.45
+  raw.patient.c10              was birth_date             called event_date             0.45  planted birth_date
+```
+
+Same rows and same types and same nulls. The column names are replaced by position labels
+and the whole thing is rebuilt as a real database rather than stubbed out in Python. Recall
+falls from 19 to 9 and automatic masking from 12 to 3. Ten digits is ten digits, so a
+clinician licence number and a telephone number come back as the same thing, and only the
+name ever told them apart.
+
+## The scanner never reads a value
+
+`pii/profile.py` sends predicates down to the database and gets counts back. What crosses
+the boundary is `976 of 983 non null values match this pattern` and never the 976 values.
+`ColumnProfile` holds its address, its catalog metadata and integers, and a check walks the
+dataclass fields rather than trusting the paragraph that says so.
+
+The cost is real. A classifier that can only count matches of patterns it already holds
+cannot find a pattern nobody wrote down, so a passport number in an unfamiliar format
+returns zero on every predicate and falls back to the name arm. Sampling would find it.
+Sampling would also mean a tool pulling personal data out of the warehouse it was pointed
+at in order to decide whether that data is personal, and the rows would then be in the
+process, in a traceback, and in whatever the caller did next.
+
+The floor does sample, which is why `pii/naive.py` is the only thing in the repo that reads
+a value. It stays that way because a comparison against a floor nobody ran is not a
+comparison.
+
+## What a missing value does to a claim about a column
+
+The floor drops nulls before taking its majority and never says so, so a column that is
+sixty percent empty and forty percent valid email addresses scores exactly like a complete
+one. Here the match rate and the share of the column it was computed over are two fields.
+
+```
+ null rate  non null  match rate   support    weight   bands moved  accept band  emptiest
+      0.00      1000      1.0000    1.0000    0.9000             0           15    0.0000
+      0.02       983      1.0000    0.9830    0.8847             0           15    0.0332
+      0.10       897      1.0000    0.8970    0.8073             0           15    0.1150
+      0.30       713      1.0000    0.7130    0.6417             0           15    0.3205
+      0.60       403      1.0000    0.4030    0.3627             1           14    0.6343
+```
+
+The rate is over the values that exist, because a missing value has no shape to match.
+Counting a null as a failure instead would put a half empty column of perfectly formed
+email addresses under the match floor, and it would never be flagged at all.
+
+And then the honest end of it. Emptying sixty percent of every column in the warehouse
+moves one band in forty two. The arm the missing values damage is the arm that was already
+deciding almost nothing.
+
+## Seven categories with no column, and six with no rule either
+
+```
+7 of 24 categories have no column in this warehouse
+6 of those also have no rule in any arm, so nothing can return them
+1 has a rule and no column, which is the one worth a fixture: payment_card
+```
+
+The taxonomy names seven things the sample warehouse has no example of. Account numbers and
+biometrics and face photographs. Occupations and payment cards and vehicle identifiers and
+web addresses. Six of the seven have no rule in any arm, so no input could ever produce
+them. That is
+fair for a taxonomy, whose job is to name what a governance tool has to be able to express
+rather than what this one detects today, and it stops being fair the moment nobody says
+which is which. `classify.rule_coverage` reports it per category, derived from the rule
+tables rather than from a list maintained beside them.
+
+`payment_card` is the one that was different. It had a token rule and a value predicate,
+both reachable, both reasonable looking, and neither had ever run against anything. It has
+a fixture now. A rule that has never fired is the easiest kind of coverage to fake.
+
 ## Running the checks
 
 ```
-python3 tests/run_all.py            194 checks, standard library only
-python3 tests/run_with_duckdb.py    223 checks, needs the driver
+python3 tests/run_all.py            238 checks, standard library only
+python3 tests/run_with_duckdb.py    281 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -329,7 +525,33 @@ pii/corpus.py + pii/reidentify.py   182 sites, 173 killed, 9 survived
 pii/crawl.py                        28 sites, 0 survivors
   control before: 222 passed, 0 failed
   control after:  222 passed, 0 failed
+
+pii/classify.py                     87 sites, 86 killed, 1 survived
+  control before: 238 passed, 0 failed
+  control after:  238 passed, 0 failed
+
+pii/profile.py                      10 sites, 10 killed, 0 survivors
+  control before: 281 passed, 0 failed
+  control after:  281 passed, 0 failed
 ```
+
+The classifier started at 65 of 87 and twenty checks were written against named
+survivors. Three dataclasses were mutable and nothing said otherwise, which matters for a
+record a masking policy and an audit trail both read back. `rule_coverage` had no test at
+all, which is what putting a measurement in the library and then not testing it looks
+like. The free text rule has two thresholds in one condition and no fixture sat on either.
+
+**One survivor is left and it is equivalent, checked rather than argued.**
+`two_readings_of_one_fact` guards with `a is None or b is None` and the mutant makes it
+`and`. Running both forms over all 576 ordered pairs of categories returns the same answer
+on every one, because only three categories carry a granularity threshold and the
+both-null case short circuits identically either way.
+
+`pii/profile.py` runs under the DuckDB suite, so it was sliced at five sites per call with
+the control at both ends of each. Its one survivor read `mean_length` off the wrong element
+of the result row. That is not a spare field. The free text rule is a threshold on it, and
+a mean length of zero turns that rule off for every column in the warehouse without
+anything failing.
 
 The crawler runs under the DuckDB suite, whose oracle is 15.8 seconds against 0.5 for the
 standard library one, so it was sliced across calls with the control at both ends of each.
@@ -352,9 +574,9 @@ it, which none does here. A different seed could kill them. They are listed as s
 rather than dismissed, because calling a seed dependent result an equivalent mutant is how
 a coverage figure gets rounded up.
 
-**One mutation pass on 09-18 was thrown away.** The oracle had been timed by running the
+**One mutation pass was thrown away.** The oracle had been timed by running the
 suite inside the copied tree without `PYTHONDONTWRITEBYTECODE`, which left `.pyc` files
-behind. `mutate.py` sets that variable for its own subprocesses, so it will not write a
+behind. The harness sets that variable for its own subprocesses, so it will not write a
 cache, and it has no way to refuse one that was already there. The control was clean at both
 ends of the discarded pass, which is the uncomfortable part: a clean control does not prove
 a pass was valid against a stale cache. Redone from a copy that nothing had ever executed.
@@ -374,11 +596,29 @@ smaller than a state. That puts it in scope and makes it a miss. Drop it and rec
 from 13/19 at 0.6842 to 13/18 at 0.7222, and the quasi figure from 4/8 to 4/7. Both readings
 are here rather than only the one that reads better.
 
-**Seven of the categories are never reached by any column.** Account numbers and biometrics
-and face photographs. Occupations and payment cards and vehicle and web identifiers. They
-exist because Safe Harbor names them and the sample schema has no example of any of them, so
-nothing has ever classified one. `Regime.PCI` is in the same position with zero columns
-under it, against 19 for HIPAA and 2 for GDPR special.
+**Seven of the categories are never reached by any column, and six have no rule either.**
+The tool reports this per category now rather than leaving it to a paragraph. `Regime.PCI`
+is in the same position with zero columns under it, against 19 for HIPAA and 2 for GDPR
+special.
+
+**The classifier is graded against two answer keys and they are not interchangeable.**
+Recall is counted over the Safe Harbor scope, because that list has another author. A false
+alarm cannot be. A column outside Safe Harbor scope is not thereby harmless, since `sex` is
+a quasi identifier this corpus re-identifies people with and a diagnosis is a GDPR special
+category, and neither is on the Safe Harbor list. So the only thing that can say a column is
+not personal is the planted label, which is mine. Using one key for both halves changes the
+false alarm count from 2 to 5.
+
+**Every weight and both thresholds are numbers I chose.** The token strengths, the match
+floor at 0.60, the conflict penalty at 0.5, accept at 0.75 and review at 0.35. Nothing here
+is fitted and nothing is calibrated. The probe sweeps the accept threshold and the table
+context bar, and the rest are stated rather than defended.
+
+**A single letter categorical column reads as a sex column on values alone.** The vocabulary
+predicate matches `M` and `F` and `X`, so a column of letter grades under an unhelpful name
+matches all of it. That predicate sits below the accept threshold for this reason, which
+means the column reaches a reviewer rather than being masked, and the check asserting it is
+in `tests/test_profile.py`.
 
 **The sensitive axis contributes nothing to the measurement.** The recall split prints
 `sensitive  nothing in scope`, because a diagnosis is not a Safe Harbor identifier. The
@@ -414,8 +654,15 @@ has not been written, let alone run.
 `raw.patient` and nothing in the crawl knows that. Column level lineage is the next piece
 and that is where the reference matters.
 
-**The value arm reads a fixed sample of fifty rows and needs a two thirds majority.** Both
-of those are numbers I chose rather than measured.
+**The floor reads a fixed sample of fifty rows and needs a two thirds majority.** Both of
+those are numbers I chose rather than measured. The classifier's value arm reads the whole
+column instead, because a count is cheap and a sample is not obviously representative.
+
+**The table context rule reads the classifier's own output.** Whether a table is about
+people is decided by whether this classifier found a direct identifier in it, so a table
+whose identifiers it misses becomes a table where every date is dropped. Following a column
+back to its source is what would actually answer the question, and that is the lineage work
+rather than a heuristic.
 
 **DuckDB is the local stand in for Snowflake.** The DDL generated here is ANSI enough to
 port and no Snowflake statement in this repo has ever executed. Anything that changes will
