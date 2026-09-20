@@ -1,10 +1,10 @@
 # PII discovery and governance toolkit
 
-Scan a warehouse, work out which columns hold personal data, generate the masking policy
-that follows, and produce an audit trail somebody would accept. This is the classification
-layer: a taxonomy with three fields rather than one label, a sample warehouse with personal
-data planted in it on purpose, a classifier that returns a confidence with every answer,
-and a measurement of what that confidence is actually worth.
+Scan a warehouse and work out which columns hold personal data. Generate the masking
+policy that follows and produce an audit trail somebody would accept. This is the
+classification layer. A taxonomy with three fields rather than one label. A sample warehouse
+with personal data planted in it on purpose. A classifier that returns a confidence with
+every answer, and a measurement of what that confidence is actually worth.
 
 ```
 python3 scripts/coverage_probe.py
@@ -30,6 +30,7 @@ pii/corpus.py       generated rows for that schema, nulls included
 pii/crawl.py        recovering the schema from a live catalog
 pii/profile.py      counting things about a column without reading one
 pii/classify.py     three arms, a confidence, and three bands
+pii/lineage.py      column level edges, recovered from the statement that built the table
 pii/naive.py        the obvious name and regex scan, kept as a floor to measure against
 pii/coverage.py     grading the floor against the clause list
 pii/reidentify.py   uniqueness and k anonymity over quasi identifiers
@@ -110,10 +111,9 @@ difference, because a reordered table and a changed one are not the same event.
 
 ## Nullability is a claim about the data now
 
-The corpus writes nulls. It did not at first, and while it did not every nullable flag was a
-declaration nothing had ever exercised: the suite could check that a NOT NULL column holds
-no null, which is the easy direction, and the reverse reading had no evidence at all in
-either direction.
+The corpus writes nulls. It did not at first. While it did not, every nullable flag was a declaration nothing had
+ever exercised. The suite could check that a NOT NULL column holds no null, which is the
+easy direction. The reverse reading had no evidence at all.
 
 From `scripts/plant.py`, about the four generated tables:
 
@@ -139,10 +139,10 @@ The rate is a number chosen rather than measured. It is low enough that no aggre
 far and high enough that a thousand rows are very unlikely to miss a column by chance, and
 the suite asserts the observed count rather than trusting that arithmetic.
 
-**The nulls are applied in a post pass, after every value is drawn.** So `generate` with the
-rate turned off reproduces the corpus as it stood before nulls, byte for byte, and the suite pins the four
-digests to prove it. That matters because it makes every figure the nulls moved
-attributable to the nulls rather than to a shifted draw.
+**The nulls are applied in a post pass, after every value is drawn.** So `generate` with
+the rate turned off reproduces the corpus as it stood before nulls, byte for byte. The suite
+pins the four digests to prove it. That matters because it makes every figure the nulls
+moved attributable to the nulls rather than to a shifted draw.
 
 **The first null broke the load, and the schema was wrong rather than the corpus.**
 `analytics.encounter_daily.department` was declared NOT NULL and the mart groups by
@@ -378,9 +378,18 @@ them is where the value came from, and this classifier cannot see that.
 
 One of the two does have a table level answer. A date is tied to an individual when the
 table is about individuals, so a temporal signal is dropped in any table where nothing else
-names a person outright. That removes `analytics.encounter_daily.day`, which is a reporting
-grain rather than anybody's date. It cannot remove `created_at`, which sits in the patient
-table beside an email address and a national identifier.
+names a person outright. That removes `analytics.encounter_daily.day`. It cannot remove
+`created_at`, which sits in the patient table beside an email address and a national
+identifier.
+
+**This README used to call `analytics.encounter_daily.day` a reporting grain rather than
+anybody's date, and the group sizes say otherwise.** The mart groups on
+day and department and postal code, and 1,386 of its 1,444 rows are a group of one. In 96
+percent of that table the day is one patient's single admission, sitting in the same row as
+their postal code. The rule that drops the signal still fires and the reason it gave was
+wrong. What it turns on is whether the grouping is coarse enough to hide anybody, and
+nothing in the classifier measures that. The planted label still reads `not_personal` and it
+is now the thing under review rather than the answer. See `scripts/lineage_probe.py`.
 
 That rule has a threshold in it and the threshold bit immediately:
 
@@ -442,6 +451,98 @@ falls from 19 to 9 and automatic masking from 12 to 3. Ten digits is ten digits,
 clinician licence number and a telephone number come back as the same thing, and only the
 name ever told them apart.
 
+## Lineage answers a question the classifier cannot, and it is a smaller question than I thought
+
+The classifier decides one column at a time on properties of that column. `pii/lineage.py`
+builds the other view: nodes are columns and edges are derivations, recovered from the
+statement that loads the mart rather than from an edge list written beside it. A hand
+written edge list is the circularity the crawler was built to break.
+
+```
+raw.encounter.admitted_at              -> analytics.encounter_daily.day          cast       cast to DATE, grouping key
+raw.encounter.department               -> analytics.encounter_daily.department   grouped    grouping key
+raw.patient.postal_code                -> analytics.encounter_daily.postal_code  grouped    grouping key
+raw.encounter.*                        -> analytics.encounter_daily.encounters   aggregate  row count over the join grain
+raw.patient.*                          -> analytics.encounter_daily.encounters   aggregate  row count over the join grain
+raw.encounter.admitted_at              -> analytics.encounter_daily.mean_length_of_stay_h aggregate  avg over the group
+raw.encounter.discharged_at            -> analytics.encounter_daily.mean_length_of_stay_h aggregate  avg over the group
+7 derivation edges, 0 refusals
+```
+
+**The kind on the edge is the whole design.** A grouping key is not an aggregate. A
+`GROUP BY` drops duplicate rows and leaves the values in the key exactly as they were, so a
+postal code that was a postal code in `raw.patient` is the same postal code in a table
+whose name suggests it has been rolled up. Copies and casts and grouping keys carry the
+label down. Aggregates do not.
+
+**The reader refuses rather than guesses.** It refuses a star and a common table expression
+and a set operation. It refuses a window function and a subquery in the FROM clause. It
+refuses an unqualified column with two sources in scope. Each returns a refusal naming what
+it could not read. A lineage edge that is wrong gets a column masked or unmasked on evidence
+nobody checked. A refusal gets a human.
+
+### It reaches five columns out of forty two
+
+```
+42 columns, 37 of them roots with nothing upstream
+5 columns have an upstream, which is 11.9 percent
+```
+
+That is the number I did not expect and it is the honest headline for this layer. Every raw
+table here is loaded rather than derived, so there is no statement to read and no upstream
+to ask. A lineage graph on this warehouse describes one mart.
+
+**It does not settle `created_at` against `admitted_at`, which is what it was supposed to
+do.** The classifier leaves those two columns indistinguishable by any property either one
+carries, and the obvious conclusion was that the thing separating them is where the value
+came from. That is right and it does not help. Neither column came from anywhere this repo
+can see.
+Both are roots. Lineage propagates what somebody already knew at the source, and at the
+source nobody knew.
+
+### Where it does earn its place
+
+Strip the mart's column names and the classifier has nothing left:
+
+```
+column                       on its own               from upstream           
+scratch.rollup_v2.d1         not_personal (ignore)    event_date              
+scratch.rollup_v2.grp        not_personal (ignore)    not_personal            
+scratch.rollup_v2.geo        not_personal (ignore)    postal_code             
+scratch.rollup_v2.n          not_personal (ignore)    not_personal            
+scratch.rollup_v2.dur        not_personal (ignore)    not_personal            
+2 columns that read as not personal on their own are personal upstream
+```
+
+Every one of those five scores 0.0000 with no signal of any kind. There is no value
+predicate for a postal code in this repo, so `raw.patient.postal_code` is caught by its name
+and by nothing else. Rename it to `geo` in a mart and the classifier goes silent. Upstream
+still knows.
+
+On the real mart, which kept its column names, propagation changes one answer out of forty
+two. That one is `analytics.encounter_daily.day`.
+
+### The aggregate that does not aggregate
+
+```
+1444 rows in the mart, encounters between 1 and 3
+1386 of them are a group of one, which is 96.0 percent
+```
+
+The mart groups on day and department and postal code, and that grain is almost unique. In
+96 percent of the table, a row is one patient's one admission with their postal code beside
+it. Calling `encounters` an aggregate is true about the function and false about the result.
+
+This is also what makes the `day` column an open question rather than a settled one. The
+classifier drops its temporal signal because nothing in the mart names a person outright,
+and the planted label agrees with the classifier. Lineage disagrees with both, and the group
+sizes are on lineage's side. The label has not been changed yet, because changing it moves
+published recall figures and belongs with the masking policy work rather than beside it.
+
+```
+python3 scripts/lineage_probe.py --db /tmp/pii.duckdb
+```
+
 ## The scanner never reads a value
 
 `pii/profile.py` sends predicates down to the database and gets counts back. What crosses
@@ -453,8 +554,8 @@ The cost is real. A classifier that can only count matches of patterns it alread
 cannot find a pattern nobody wrote down, so a passport number in an unfamiliar format
 returns zero on every predicate and falls back to the name arm. Sampling would find it.
 Sampling would also mean a tool pulling personal data out of the warehouse it was pointed
-at in order to decide whether that data is personal, and the rows would then be in the
-process, in a traceback, and in whatever the caller did next.
+at in order to decide whether that data is personal. The rows would then be in the process.
+They would be in a traceback, and in whatever the caller did next.
 
 The floor does sample, which is why `pii/naive.py` is the only thing in the repo that reads
 a value. It stays that way because a comparison against a floor nobody ran is not a
@@ -500,15 +601,14 @@ rather than what this one detects today, and it stops being fair the moment nobo
 which is which. `classify.rule_coverage` reports it per category, derived from the rule
 tables rather than from a list maintained beside them.
 
-`payment_card` is the one that was different. It had a token rule and a value predicate,
-both reachable, both reasonable looking, and neither had ever run against anything. It has
-a fixture now. A rule that has never fired is the easiest kind of coverage to fake.
+`payment_card` is the one that was different. It had a token rule and a value predicate. Both were reachable and both looked reasonable,
+and neither had ever run against anything. It has a fixture now. A rule that has never fired is the easiest kind of coverage to fake.
 
 ## Running the checks
 
 ```
-python3 tests/run_all.py            238 checks, standard library only
-python3 tests/run_with_duckdb.py    281 checks, needs the driver
+python3 tests/run_all.py            295 checks, standard library only
+python3 tests/run_with_duckdb.py    346 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -533,7 +633,29 @@ pii/classify.py                     87 sites, 86 killed, 1 survived
 pii/profile.py                      10 sites, 10 killed, 0 survivors
   control before: 281 passed, 0 failed
   control after:  281 passed, 0 failed
+
+pii/lineage.py                      161 sites, 153 killed, 7 survived, 1 ungraded
+  control before: 295 passed, 0 failed
+  control after:  295 passed, 0 failed
 ```
+
+`pii/lineage.py` opened at 106 of 163 and that is the worst a module has started here. The
+reader is a parser and a parser is mostly branches nothing obvious exercises. Twenty nine
+checks were written against named survivors and the second pass is 153 of 160 graded.
+
+Three of those checks came out of one measurement rather than out of an argument. Six
+survivors sat in the string scanner and all six looked equivalent, so both forms were run
+over 200,001 generated inputs. One of the six agrees on every input and is equivalent.
+The other five differ on an empty literal and on an escaped quote, which are ordinary SQL
+and not edge cases, and they only survived because no statement in the suite contained
+either. `SELECT '' AS blank, p.city` is the input that separates them.
+
+**One site is ungraded and the reason is worth keeping.** Changing one offset in the cast
+scanner produces a mutant that never terminates, and the mutation tool has no per mutant
+timeout, so the pass hangs rather than reporting. The unmutated code does terminate. It
+terminated for a reason that lived in the rewrite rather than in the loop, though, so the
+scan now moves forward instead of restarting from the beginning of the string. That is a
+termination guarantee the loop makes on its own.
 
 The classifier started at 65 of 87 and twenty checks were written against named
 survivors. Three dataclasses were mutable and nothing said otherwise, which matters for a
@@ -609,9 +731,9 @@ category, and neither is on the Safe Harbor list. So the only thing that can say
 not personal is the planted label, which is mine. Using one key for both halves changes the
 false alarm count from 2 to 5.
 
-**Every weight and both thresholds are numbers I chose.** The token strengths, the match
-floor at 0.60, the conflict penalty at 0.5, accept at 0.75 and review at 0.35. Nothing here
-is fitted and nothing is calibrated. The probe sweeps the accept threshold and the table
+**Every weight and both thresholds are numbers I chose.** The token strengths. The match
+floor at 0.60 and the conflict penalty at 0.5. Accept at 0.75 and review at 0.35. Nothing
+here is fitted and nothing is calibrated. The probe sweeps the accept threshold and the table
 context bar, and the rest are stated rather than defended.
 
 **A single letter categorical column reads as a sex column on values alone.** The vocabulary
@@ -650,9 +772,18 @@ specific catalog functions. `information_schema` would port further and does not
 primary key information in a form this needs. A Snowflake crawl is a second adapter and it
 has not been written, let alone run.
 
-**Only primary keys are recovered, not foreign keys.** `raw.encounter.patient_id` points at
-`raw.patient` and nothing in the crawl knows that. Column level lineage is the next piece
-and that is where the reference matters.
+**A reference can only be recovered inside one schema.** DuckDB refuses a foreign key across
+schemas with a binder error, so `analytics.encounter_daily` cannot declare one back to
+`raw.patient` even though every row in it came from there. The catalog also hands back the
+referenced table as a bare name with no schema on it. Resolving that inside the referencing
+schema is correct for this engine and is a guess on any engine that allows the cross schema
+case.
+
+**Lineage reaches five of the forty two columns.** The graph is built from the statement
+that loads the mart, and every other column in this warehouse arrives by a path no SQL in
+this repo describes. That is not a gap in the reader. It is what a lineage layer is on a
+warehouse whose raw tables are loaded rather than derived, and it is the reason the
+classifier is still the thing doing the work.
 
 **The floor reads a fixed sample of fifty rows and needs a two thirds majority.** Both of
 those are numbers I chose rather than measured. The classifier's value arm reads the whole
