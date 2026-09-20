@@ -182,6 +182,59 @@ TABLES: Tuple[Table, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class ForeignKey:
+    """A declared reference from one table's column to another's.
+
+    Separate from `Table` rather than a field on `Column`, and the reason is the pinned
+    fingerprint. `fingerprint()` hashes five fields per column and the crawler is graded
+    against the value it produces. Hanging a reference off `Column` would move that hash
+    for a change that adds information rather than altering any of the five, and the pin
+    would then have to be re-derived for a reason nobody reading it later would understand.
+    """
+
+    table: str
+    column: str
+    references_table: str
+    references_column: str
+
+    @property
+    def address(self) -> str:
+        return "{}.{}".format(self.table, self.column)
+
+
+# DuckDB will not create a foreign key across schemas, so every one of these sits inside
+# `raw` and the mart has none. That is an engine limit rather than a modelling choice and
+# it is why `analytics.encounter_daily` gets its lineage from the statement that built it
+# instead of from the catalog.
+FOREIGN_KEYS: Tuple[ForeignKey, ...] = (
+    ForeignKey("raw.encounter", "patient_id", "raw.patient", "patient_id"),
+    ForeignKey("raw.claim", "encounter_id", "raw.encounter", "encounter_id"),
+    ForeignKey("raw.device_reading", "patient_id", "raw.patient", "patient_id"),
+)
+
+
+# The statement that builds the one derived table. It lives here rather than inside
+# `scripts/plant.py` because `pii/lineage.py` reads it to recover the column level edges,
+# and a lineage graph parsed from a copy of the loader's SQL is a graph of a statement that
+# never ran. One string, one reader, one loader.
+DERIVED_SQL: Dict[str, str] = {
+    "analytics.encounter_daily": """
+        INSERT INTO analytics.encounter_daily
+        SELECT
+            CAST(e.admitted_at AS DATE)                     AS day,
+            e.department                                    AS department,
+            p.postal_code                                   AS postal_code,
+            count(*)                                        AS encounters,
+            avg(date_diff('minute', e.admitted_at,
+                          e.discharged_at) / 60.0)          AS mean_length_of_stay_h
+        FROM raw.encounter e
+        JOIN raw.patient p ON p.patient_id = e.patient_id
+        GROUP BY 1, 2, 3
+    """,
+}
+
+
 PLANTED: Tuple[PlantedColumn, ...] = (
     # raw.patient
     PlantedColumn("raw.patient", "patient_id", "not_personal",
@@ -312,6 +365,41 @@ def check_planting_is_total() -> Optional[str]:
     for key in idx:
         if key not in known:
             return "planted label {}.{} names no column".format(*key)
+    return None
+
+
+def nullable_by_address() -> Dict[str, bool]:
+    """Every column's declared nullability, keyed the way the lineage graph keys things."""
+    return {
+        "{}.{}".format(fqn, c.name): c.nullable
+        for fqn, c in all_columns()
+    }
+
+
+def check_foreign_keys_are_real() -> Optional[str]:
+    """Both ends of every declared reference name a column that exists.
+
+    Returns a description of the first problem, or None. A reference to a column nobody
+    declared would be caught by DuckDB at create time, and a reference to the wrong column
+    of the right table would not be. The referenced side also has to be a key, because a
+    reference to a non unique column is not a reference to a row.
+    """
+    tables = tables_by_fqn()
+    for fk in FOREIGN_KEYS:
+        for fqn, column in ((fk.table, fk.column),
+                            (fk.references_table, fk.references_column)):
+            if fqn not in tables:
+                return "foreign key on {} names table {} which does not exist".format(
+                    fk.address, fqn)
+            try:
+                tables[fqn].column(column)
+            except KeyError:
+                return "foreign key on {} names column {}.{} which does not exist".format(
+                    fk.address, fqn, column)
+        parent = tables[fk.references_table].column(fk.references_column)
+        if not parent.is_key:
+            return "foreign key on {} references {}.{} which is not a key".format(
+                fk.address, fk.references_table, fk.references_column)
     return None
 
 

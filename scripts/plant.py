@@ -25,12 +25,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pii.corpus import ROWS_FOR, generate, null_counts, summarise  # noqa: E402
-from pii.schema import PLANTED, TABLES, check_planting_is_total  # noqa: E402
+from pii.schema import (  # noqa: E402
+    DERIVED_SQL, FOREIGN_KEYS, PLANTED, TABLES,
+    check_foreign_keys_are_real, check_planting_is_total,
+)
 from pii.taxonomy import TAXONOMY  # noqa: E402
 
 
 def ddl_for(table) -> str:
-    """The DDL for one table, including its primary key.
+    """The DDL for one table, including its primary key and its references.
 
     The key used to be left out, and that made `Column.is_key` a flag only this repo knew
     about. It is one of the five fields in `schema.fingerprint()`, so a crawler reading the
@@ -42,6 +45,13 @@ def ddl_for(table) -> str:
     duplicate id rather than accepting one, which is a stricter warehouse than the one the
     earlier figures came off. That is the right direction and it is a change in behaviour
     rather than a change in documentation.
+
+    The foreign keys are the same move made a second time. A join key was a thing this repo
+    knew and the catalog did not, so a crawler had no way to recover one. Declaring them
+    puts them where `duckdb_constraints()` can answer for them. The same cost applies and
+    it is larger: an enforced reference means the loader has to drop child tables before
+    parents and insert parents before children, which is the ordering `load` now does
+    on purpose rather than by luck.
     """
     cols = []
     for c in table.columns:
@@ -52,6 +62,11 @@ def ddl_for(table) -> str:
     keys = [c.name for c in table.columns if c.is_key]
     if keys:
         cols.append("  PRIMARY KEY ({})".format(", ".join(keys)))
+    for fk in FOREIGN_KEYS:
+        if fk.table != table.fqn:
+            continue
+        cols.append("  FOREIGN KEY ({}) REFERENCES {} ({})".format(
+            fk.column, fk.references_table, fk.references_column))
     return "CREATE TABLE {} (\n{}\n);".format(table.fqn, ",\n".join(cols))
 
 
@@ -78,9 +93,17 @@ def load(db_path: str, corpus) -> dict:
     try:
         for schema in sorted({t.schema for t in TABLES}):
             con.execute("CREATE SCHEMA IF NOT EXISTS {}".format(schema))
+        # Every drop first, children before parents, because an enforced reference makes
+        # `DROP TABLE raw.patient` fail while `raw.encounter` still points at it. The old
+        # loop dropped and created one table at a time and worked only because nothing
+        # referenced anything. Reversing `TABLES` is enough here since the declaration
+        # order is already parents first, and a real dependency sort is what this needs if
+        # the schema ever stops being a straight line.
+        for t in reversed(TABLES):
+            con.execute("DROP TABLE IF EXISTS {}".format(t.fqn))
+
         loaded = {}
         for t in TABLES:
-            con.execute("DROP TABLE IF EXISTS {}".format(t.fqn))
             con.execute(ddl_for(t).rstrip(";"))
             attr = ROWS_FOR.get(t.fqn)
             if attr is None:
@@ -97,19 +120,7 @@ def load(db_path: str, corpus) -> dict:
             )
             loaded[t.fqn] = len(rows)
 
-        con.execute("""
-            INSERT INTO analytics.encounter_daily
-            SELECT
-                CAST(e.admitted_at AS DATE)                     AS day,
-                e.department                                    AS department,
-                p.postal_code                                   AS postal_code,
-                count(*)                                        AS encounters,
-                avg(date_diff('minute', e.admitted_at,
-                              e.discharged_at) / 60.0)          AS mean_length_of_stay_h
-            FROM raw.encounter e
-            JOIN raw.patient p ON p.patient_id = e.patient_id
-            GROUP BY 1, 2, 3
-        """)
+        con.execute(DERIVED_SQL["analytics.encounter_daily"])
         loaded["analytics.encounter_daily"] = con.execute(
             "SELECT count(*) FROM analytics.encounter_daily").fetchone()[0]
 
@@ -147,10 +158,11 @@ def main() -> int:
     ap.add_argument("--key", action="store_true", help="print the planted answer key")
     args = ap.parse_args()
 
-    problem = check_planting_is_total()
-    if problem is not None:
-        print("refusing to build: {}".format(problem))
-        return 2
+    for check in (check_planting_is_total, check_foreign_keys_are_real):
+        problem = check()
+        if problem is not None:
+            print("refusing to build: {}".format(problem))
+            return 2
 
     corpus = generate(n_patients=args.patients, seed=args.seed)
 

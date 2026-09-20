@@ -31,7 +31,8 @@ CREATE TABLE raw.encounter (
   primary_diagnosis VARCHAR,
   clinical_note VARCHAR,
   disposition VARCHAR,
-  PRIMARY KEY (encounter_id)
+  PRIMARY KEY (encounter_id),
+  FOREIGN KEY (patient_id) REFERENCES raw.patient (patient_id)
 );
 
 CREATE TABLE raw.claim (
@@ -43,7 +44,8 @@ CREATE TABLE raw.claim (
   paid_amount DECIMAL(12,2),
   claim_status VARCHAR,
   submitted_on DATE,
-  PRIMARY KEY (claim_id)
+  PRIMARY KEY (claim_id),
+  FOREIGN KEY (encounter_id) REFERENCES raw.encounter (encounter_id)
 );
 
 CREATE TABLE raw.device_reading (
@@ -54,7 +56,8 @@ CREATE TABLE raw.device_reading (
   metric VARCHAR,
   reading_value DOUBLE,
   source_ip VARCHAR,
-  PRIMARY KEY (reading_id)
+  PRIMARY KEY (reading_id),
+  FOREIGN KEY (patient_id) REFERENCES raw.patient (patient_id)
 );
 
 CREATE TABLE analytics.encounter_daily (
