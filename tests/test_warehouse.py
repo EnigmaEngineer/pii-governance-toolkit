@@ -145,3 +145,54 @@ def check_every_declared_sql_type_is_one_duckdb_accepts():
                 con.execute("SELECT CAST(NULL AS {})".format(c.sql_type))
     finally:
         con.close()
+
+
+def check_the_loader_can_run_twice_over_the_same_file():
+    # An enforced foreign key makes `DROP TABLE raw.patient` fail while `raw.encounter`
+    # still references it. The old loader dropped and created one table at a time and
+    # worked only because nothing referenced anything, so this is the check that the
+    # reversed drop order is load bearing rather than tidy.
+    path = _tmp_db()
+    corpus = generate(n_patients=60, seed=41)
+    try:
+        first = load(path, corpus)
+        second = load(path, corpus)
+        assert first == second, (first, second)
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def check_the_warehouse_refuses_an_encounter_for_a_patient_who_does_not_exist():
+    # The point of declaring the references. Without them this insert succeeds and the
+    # orphan sits there until somebody joins on it.
+    import duckdb
+
+    path = _tmp_db()
+    try:
+        load(path, generate(n_patients=40, seed=7))
+        con = duckdb.connect(path)
+        try:
+            failed = False
+            try:
+                con.execute(
+                    "INSERT INTO raw.encounter VALUES "
+                    "(999999, 888888, now(), now(), 'x', 'y', 'z', 'n', 'home')")
+            except Exception:
+                failed = True
+            assert failed, "an orphan encounter was accepted"
+        finally:
+            con.close()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def check_the_generated_ddl_carries_the_references():
+    from pii.schema import FOREIGN_KEYS
+
+    for fk in FOREIGN_KEYS:
+        sql = ddl_for(tables_by_fqn()[fk.table])
+        expected = "FOREIGN KEY ({}) REFERENCES {} ({})".format(
+            fk.column, fk.references_table, fk.references_column)
+        assert expected in sql, (fk.table, expected)

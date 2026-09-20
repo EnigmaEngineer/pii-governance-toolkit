@@ -64,11 +64,34 @@ class Difference:
 
 
 @dataclass(frozen=True)
+class RecoveredReference:
+    """One declared foreign key, read out of the catalog.
+
+    The referenced table arrives from `duckdb_constraints()` as a bare name with no schema
+    attached, and this resolves it inside the referencing table's own schema. That is
+    correct for DuckDB and only for DuckDB, which refuses a cross schema foreign key with
+    a binder error rather than storing one. Any engine that allows one makes this
+    resolution a guess, so the rule is written down here instead of being buried in a
+    format string.
+    """
+
+    table: str
+    column: str
+    references_table: str
+    references_column: str
+
+    def __str__(self) -> str:
+        return "{}.{} -> {}.{}".format(
+            self.table, self.column, self.references_table, self.references_column)
+
+
+@dataclass(frozen=True)
 class Crawl:
     tables: Tuple[Table, ...]
     key_columns: Tuple[Tuple[str, str], ...]
     engine: str
     engine_version: str
+    references: Tuple[RecoveredReference, ...] = ()
 
     @property
     def fqns(self) -> Tuple[str, ...]:
@@ -156,6 +179,29 @@ def crawl(con) -> Crawl:
         for name in columns:
             keys.add(("{}.{}".format(schema_name, table_name), name))
 
+    # The same catalog view carries the referential half and the first version of this
+    # function read none of it. `raw.encounter.patient_id` pointed at `raw.patient.patient_id`
+    # in the DDL and nothing downstream could see the relationship, so every question about
+    # which table a date belonged to was answered by a heuristic over column names instead.
+    reference_rows = _rows(con, """
+        SELECT schema_name, table_name, constraint_column_names,
+               referenced_table, referenced_column_names
+        FROM duckdb_constraints()
+        WHERE constraint_type = 'FOREIGN KEY'
+          AND schema_name NOT IN ({})
+        ORDER BY schema_name, table_name
+    """.format(placeholders), ENGINE_SCHEMAS)
+
+    references = []
+    for schema_name, table_name, columns, ref_table, ref_columns in reference_rows:
+        for local, remote in zip(columns, ref_columns):
+            references.append(RecoveredReference(
+                table="{}.{}".format(schema_name, table_name),
+                column=local,
+                references_table="{}.{}".format(schema_name, ref_table),
+                references_column=remote,
+            ))
+
     grouped: Dict[Tuple[str, str], List[Column]] = {}
     for schema_name, table_name, column_name, _index, data_type, is_nullable in column_rows:
         fqn = "{}.{}".format(schema_name, table_name)
@@ -175,7 +221,41 @@ def crawl(con) -> Crawl:
         key_columns=tuple(sorted(keys)),
         engine="duckdb",
         engine_version=str(version),
+        references=tuple(sorted(
+            references, key=lambda r: (r.table, r.column))),
     )
+
+
+def compare_references(crawled: Crawl) -> Tuple[Difference, ...]:
+    """Declared references against recovered ones, both directions like `compare`.
+
+    Kept out of `compare` on purpose. That function walks columns and its result feeds the
+    fingerprint story, and a reference is not one of the five fields in the hash. Folding
+    these in would make a green `compare` mean two different things.
+    """
+    # Read off the module rather than off a name bound at import time, the same way
+    # `_fingerprint_over` reaches for `declared.TABLES`, so a test that swaps the declared
+    # schema swaps its references with it.
+    import pii.schema as declared
+
+    declared_refs = {
+        (fk.table, fk.column): (fk.references_table, fk.references_column)
+        for fk in declared.FOREIGN_KEYS
+    }
+    found = {
+        (r.table, r.column): (r.references_table, r.references_column)
+        for r in crawled.references
+    }
+    out: List[Difference] = []
+    for key in sorted(set(declared_refs) | set(found)):
+        where = "{}.{}".format(*key)
+        if key not in found:
+            out.append(Difference(where, "reference", declared_refs[key], None))
+        elif key not in declared_refs:
+            out.append(Difference(where, "reference", None, found[key]))
+        elif declared_refs[key] != found[key]:
+            out.append(Difference(where, "reference", declared_refs[key], found[key]))
+    return tuple(out)
 
 
 def compare(crawled: Crawl) -> Tuple[Difference, ...]:

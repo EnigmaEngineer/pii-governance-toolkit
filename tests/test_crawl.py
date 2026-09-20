@@ -440,3 +440,95 @@ def check_a_catalog_identifier_is_quoted_before_it_reaches_sql():
     assert by_name['we"ird'].nulls_observed == 1
     assert by_name["order"].nulls_observed == 0
     assert crawler.contradictions(verdicts) == ()
+
+
+def check_the_crawl_recovers_the_declared_foreign_keys():
+    # `duckdb_constraints()` carries `referenced_table` and `referenced_column_names` and
+    # the first version of the crawler read neither, so every join key in the warehouse was
+    # invisible to anything downstream.
+    crawled, _ = _crawl()
+    got = {(r.table, r.column, r.references_table, r.references_column)
+           for r in crawled.references}
+    assert got == {
+        ("raw.encounter", "patient_id", "raw.patient", "patient_id"),
+        ("raw.claim", "encounter_id", "raw.encounter", "encounter_id"),
+        ("raw.device_reading", "patient_id", "raw.patient", "patient_id"),
+    }, sorted(got)
+    assert crawler.compare_references(crawled) == ()
+
+
+def check_a_reference_is_not_confused_with_a_key():
+    # `raw.encounter.patient_id` references a key and is not one. A crawler reading the
+    # constraint catalog without filtering on constraint type would call it both.
+    crawled, _ = _crawl()
+    keys = set(crawled.key_columns)
+    assert ("raw.encounter", "encounter_id") in keys
+    assert ("raw.encounter", "patient_id") not in keys
+    referencing = {(r.table, r.column) for r in crawled.references}
+    assert ("raw.encounter", "patient_id") in referencing
+
+
+def check_the_reference_comparison_looks_both_ways():
+    import pii.schema as declared
+
+    crawled, _ = _crawl()
+    original = declared.FOREIGN_KEYS
+    try:
+        # Declared and not in the catalog.
+        declared.FOREIGN_KEYS = original + (
+            declared.ForeignKey("raw.claim", "claim_id", "raw.patient", "patient_id"),)
+        out = crawler.compare_references(crawled)
+        assert len(out) == 1 and out[0].crawled is None, out
+
+        # In the catalog and not declared.
+        declared.FOREIGN_KEYS = original[:2]
+        out = crawler.compare_references(crawled)
+        assert len(out) == 1 and out[0].declared is None, out
+
+        # Declared pointing somewhere else.
+        declared.FOREIGN_KEYS = original[:2] + (
+            declared.ForeignKey("raw.device_reading", "patient_id",
+                                "raw.patient", "mrn"),)
+        out = crawler.compare_references(crawled)
+        assert len(out) == 1, out
+        assert out[0].declared == ("raw.patient", "mrn"), out[0]
+        assert out[0].crawled == ("raw.patient", "patient_id"), out[0]
+    finally:
+        declared.FOREIGN_KEYS = original
+
+
+def check_foreign_key_edges_come_back_as_join_keys_and_not_as_data_flow():
+    import duckdb
+
+    from pii import lineage
+
+    con = duckdb.connect(_built(), read_only=True)
+    try:
+        edges = lineage.foreign_key_edges(con, crawler.ENGINE_SCHEMAS)
+    finally:
+        con.close()
+    assert len(edges) == 3, edges
+    assert all(e.kind is lineage.EdgeKind.JOIN_KEY for e in edges)
+    # The direction is parent to child, which is the direction a row lookup travels. It is
+    # deliberately not a derivation, so it propagates nothing.
+    g = lineage.Graph(edges=edges)
+    assert g.derivation_edges() == ()
+
+
+def check_duckdb_still_refuses_a_cross_schema_foreign_key():
+    # The whole reason `foreign_key_edges` may resolve a bare referenced table name inside
+    # the referencing schema. If this ever starts passing, that resolution is a guess and
+    # the catalog has to be asked which schema it meant.
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute("CREATE SCHEMA a")
+        con.execute("CREATE SCHEMA b")
+        con.execute("CREATE TABLE a.parent (pid BIGINT NOT NULL, PRIMARY KEY (pid))")
+        refused = _raises(lambda: con.execute(
+            "CREATE TABLE b.child (cid BIGINT NOT NULL, pid BIGINT NOT NULL, "
+            "PRIMARY KEY (cid), FOREIGN KEY (pid) REFERENCES a.parent (pid))"))
+        assert refused, "duckdb accepted a cross schema foreign key"
+    finally:
+        con.close()
