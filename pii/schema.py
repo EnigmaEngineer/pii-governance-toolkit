@@ -289,8 +289,17 @@ PLANTED: Tuple[PlantedColumn, ...] = (
     PlantedColumn("raw.device_reading", "source_ip", "ip_address"),
 
     # analytics.encounter_daily
-    PlantedColumn("analytics.encounter_daily", "day", "not_personal",
-                  why="An aggregate grain, not a date tied to one individual."),
+    PlantedColumn("analytics.encounter_daily", "day", "event_date", observed=_G.DAY,
+                  why="Planted not_personal at first, on the reading that a GROUP BY makes "
+                      "a reporting grain out of a date. The data says otherwise and the "
+                      "label moved to follow it. 1,386 of the 1,444 rows in this mart are "
+                      "a group of one, so in 1,504 encounters the day is one patient's "
+                      "single admission sitting beside their postal code. Lineage agrees "
+                      "and reads it as a CAST of raw.encounter.admitted_at. Moving this "
+                      "label costs the recall headline, which goes from 19 of 19 to 19 of "
+                      "20, because the classifier calls it not personal and now that is a "
+                      "miss. A published number is not a reason to keep an answer key the "
+                      "data contradicts."),
     PlantedColumn("analytics.encounter_daily", "department", "not_personal"),
     PlantedColumn("analytics.encounter_daily", "postal_code", "postal_code",
                   observed=_G.POSTAL_5,
