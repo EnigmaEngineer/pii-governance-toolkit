@@ -74,6 +74,17 @@ def section_scan(corpus):
     names_only = coverage.grade()
     with_values = coverage.grade(samples)
 
+    # The corpus holds the four generated tables and not the derived one, because the mart
+    # is built by SQL inside the database. So every column in `analytics.encounter_daily`
+    # reaches the value arm with nothing to read, and until the day column came into scope
+    # the mart had one in scope column that the name arm catches anyway, which is why this
+    # was invisible. A line reading "names plus values" over a table that got no values is
+    # the number lying about which arm produced it. Re-deriving the mart in Python here
+    # would fix the line and duplicate `DERIVED_SQL`, and a copy of the loader's statement
+    # is exactly the circularity the rest of this repo refuses. So the gap is printed.
+    unsampled = sorted({p.table for p in PLANTED} - set(samples))
+    blind = [v for v in with_values.in_scope if v.table in unsampled]
+
     print("in safe harbor scope       {} of {} columns".format(
         len(with_values.in_scope), with_values.n_columns))
     print("recall, names only         {}/{}  {:.4f}".format(
@@ -82,6 +93,11 @@ def section_scan(corpus):
     print("recall, names plus values  {}/{}  {:.4f}".format(
         sum(1 for v in with_values.in_scope if v.naive_calls_it_personal),
         len(with_values.in_scope), with_values.recall))
+    print("  no value sample reached   {}, so {} in scope column{} there were graded"
+          .format(", ".join(unsampled) or "nothing",
+                  len(blind), "" if len(blind) == 1 else "s"))
+    print("  on names alone. scripts/classify_probe.py reads its sample out of the")
+    print("  database and sees all five tables, which is why its floor row is higher.")
     print("false alarms               {}".format(len(with_values.false_alarms)))
     print("flagged as wrong category  {}".format(len(with_values.wrong_category)))
     print("  recall counts those as found, because the column did get flagged. A masking")
