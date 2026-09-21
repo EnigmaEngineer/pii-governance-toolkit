@@ -31,6 +31,7 @@ pii/crawl.py        recovering the schema from a live catalog
 pii/profile.py      counting things about a column without reading one
 pii/classify.py     three arms, a confidence, and three bands
 pii/lineage.py      column level edges, recovered from the statement that built the table
+pii/mask.py         masking policy generation, application, and the k left afterwards
 pii/naive.py        the obvious name and regex scan, kept as a floor to measure against
 pii/coverage.py     grading the floor against the clause list
 pii/reidentify.py   uniqueness and k anonymity over quasi identifiers
@@ -175,14 +176,17 @@ it. The name list was written from memory, covering what came to mind, which is 
 Graded against the Safe Harbor clause list over the sample schema:
 
 ```
-in safe harbor scope       19 of 42 columns
-recall, names only         10/19  0.5263
-recall, names plus values  13/19  0.6842
+in safe harbor scope       20 of 42 columns
+recall, names only         10/20  0.5000
+recall, names plus values  13/20  0.6500
+  no value sample reached   analytics.encounter_daily, so 2 in scope columns there were graded
+  on names alone. scripts/classify_probe.py reads its sample out of the
+  database and sees all five tables, which is why its floor row is higher.
 false alarms               0
 flagged as wrong category  2
 
   direct     9/11  0.8182
-  quasi      4/8  0.5000
+  quasi      4/9  0.4444
 ```
 
 Most of the way there on direct identifiers. A coin flip on quasi ones. Both halves are
@@ -198,9 +202,10 @@ What it walks past:
   raw.claim.member_number                  health_plan_id   direct
   raw.device_reading.device_serial         device_id        direct
   raw.device_reading.taken_at              event_date       quasi
+  analytics.encounter_daily.day            event_date       quasi
 ```
 
-Three of six are timestamps. Clause C says every element of a date tied to an individual is
+Four of seven are timestamps. Clause C says every element of a date tied to an individual is
 an identifier except the year, and no column name heuristic is going to call `admitted_at`
 personal data.
 
@@ -328,34 +333,37 @@ Against the substring floor, from `scripts/classify_probe.py`:
 
 ```
                                    substring floor   classifier
-in Safe Harbor scope, found               13/19        19/19
-right category                            11/19        19/19
-masked with no human in the loop    all of them        12/19
-flagged and planted not personal              1            2
+in Safe Harbor scope, found               14/20        19/20
+right category                            11/20        19/20
+masked with no human in the loop    all of them        12/20
+flagged and planted not personal              0            2
 ```
 
 **Read the first row and then discount it.** I wrote the token rules with the answer key
-open, so 19 of 19 is a report on my memory rather than on the method. Any classifier
+open, so 19 of 20 is a report on my memory rather than on the method. Any classifier
 written the same way gets the same number. It is printed because leaving it out would look
 like hiding it.
 
 The third row is the one that is not circular. The floor has no confidence, so every answer
-it gives carries the same authority: either all 13 columns it finds are masked without
+it gives carries the same authority: either all 14 columns it finds are masked without
 anybody looking, or none of them are. This classifier masks 12 and sends the rest to a
 person, and the question is whether it sends the right ones.
 
 ```
 accept band  15 columns, 0 of them planted not personal
 review band   9 columns, 2 of them planted not personal
-ignored      18 columns, 0 of them in Safe Harbor scope
+ignored      18 columns, 1 of them in Safe Harbor scope
 
-lowest column masked with no human      0.7500
+lowest column masked with no human    0.7500
 highest column the classifier got wrong 0.7250
-margin                                  0.0250
+margin                                 0.0250
 ```
 
 Both mistakes land in the band that goes to a human and nothing wrong is masked
 automatically. That is the result the design is for and the margin is what it rests on.
+The third line is the cost of it. One Safe Harbor column is ignored outright rather than
+queued, and it is `analytics.encounter_daily.day`, dropped by the table context rule
+because the mart names nobody. A column in the ignore band reaches no reviewer.
 Twenty five thousandths, on a scale from zero to one, over forty two columns. I picked the
 accept threshold with both of those numbers on the screen, so the separation is a fact
 about this warehouse rather than a property of the method.
@@ -388,16 +396,21 @@ day and department and postal code, and 1,386 of its 1,444 rows are a group of o
 percent of that table the day is one patient's single admission, sitting in the same row as
 their postal code. The rule that drops the signal still fires and the reason it gave was
 wrong. What it turns on is whether the grouping is coarse enough to hide anybody, and
-nothing in the classifier measures that. The planted label still reads `not_personal` and it
-is now the thing under review rather than the answer. See `scripts/lineage_probe.py`.
+nothing in the classifier measures that. **The planted label now reads `event_date` and the
+recall figures above carry the cost.** The denominator went from 19 to 20, the classifier
+still calls the column not personal, and that is a miss rather than a find. Keeping an
+answer key the data contradicts in order to protect a published number is the trade this
+repo is not going to make. See `scripts/lineage_probe.py` and `scripts/mask_probe.py`.
 
 That rule has a threshold in it and the threshold bit immediately:
 
 ```
  bar     found   masked    wrong  tables treated as about people
-0.35     19/19       12        2  4
-0.60     17/19       12        2  3
-0.75     16/19       12        2  2
+0.35     19/20       12        2  4
+0.60     17/20       12        2  3
+0.70     17/20       12        2  3
+0.75     16/20       12        2  2
+0.90     16/20       12        2  2
 ```
 
 At 0.75 `raw.claim` stops counting as a table about people. Its only direct identifier is a
@@ -413,18 +426,18 @@ Removing one arm at a time and counting how many band assignments move:
 
 ```
 arms                       found  masked    wrong   bands moved
-all three                  19/19      12        2             0
-name only                  19/19      13        2             2
-value only                  5/19       3        0            20
-structure only              0/19       0        0            24
-without name                9/19       3        1            16
-without value              19/19      13        2             2
-without structure          19/19      12        2             0
+all three                  19/20      12        2             0
+name only                  19/20      13        2             2
+value only                  5/20       3        0            20
+structure only              0/20       0        0            24
+without name                9/20       3        1            16
+without value              19/20      13        2             2
+without structure          19/20      12        2             0
 ```
 
 **The structure arm moves no band anywhere.** It changes the number printed beside five
 columns and changes no decision about any of them. The value arm moves two. Take the name
-arm away and the classifier finds 9 of 19 instead of 19.
+arm away and the classifier finds 9 of 20 instead of 19.
 
 So on this warehouse the confidence is mostly a restatement of how sure I was when I wrote
 the token list. That is not an argument for deleting the other two arms. It is an argument
@@ -432,9 +445,10 @@ that a warehouse with meaningful column names is the easy case, and the honest w
 what the other arms are worth is to take the names away:
 
 ```
-in Safe Harbor scope, found        9/19
-right category                     7/19
-masked with no human in the loop   3/19
+in Safe Harbor scope, found        9/20
+right category                     7/20
+masked with no human in the loop   3/20
+flagged and planted not personal   1
 
   raw.patient.c12              was ssn                    called national_id            0.89
   raw.patient.c05              was email                  called email                  0.88
@@ -533,15 +547,124 @@ The mart groups on day and department and postal code, and that grain is almost 
 96 percent of the table, a row is one patient's one admission with their postal code beside
 it. Calling `encounters` an aggregate is true about the function and false about the result.
 
-This is also what makes the `day` column an open question rather than a settled one. The
-classifier drops its temporal signal because nothing in the mart names a person outright,
-and the planted label agrees with the classifier. Lineage disagrees with both, and the group
-sizes are on lineage's side. The label has not been changed yet, because changing it moves
-published recall figures and belongs with the masking policy work rather than beside it.
+This is what settled the `day` column. The classifier drops its temporal signal because
+nothing in the mart names a person outright, and the planted label used to agree with the
+classifier. Lineage disagreed with both and the group sizes were on lineage's side, so the
+label moved to `event_date`. Recall went from 19 of 19 to 19 of 20 and the miss is named
+above. The substring floor finds the column the classifier walks past, because the phone
+regex matches an ISO date and the floor has no table context rule to talk itself out of it.
+Being right for no reason still counts in the numerator, which is one more thing a single
+recall figure hides.
 
 ```
 python3 scripts/lineage_probe.py --db /tmp/pii.duckdb
 ```
+
+## The policy is the easy half
+
+`pii/mask.py` turns a classification into an action and the action into SQL. Then it applies
+the SQL and measures how many people are still alone afterwards. The first three steps are a
+lookup and a string. The fourth is the only part that can contradict anything, and it does.
+
+```
+python3 scripts/mask_probe.py --db /tmp/pii.duckdb
+```
+
+Over the forty two columns:
+
+```
+  redact       9
+  generalise   3
+  retain       21
+  review       9
+```
+
+A direct identifier is redacted, because it names somebody by itself and has no coarser form
+that stops doing so. A quasi identifier with a granularity threshold is generalised to what
+the clause list permits. A sensitive attribute is retained, because a diagnosis is not an
+identifier and redacting it protects nobody who has not already been picked out by the quasi
+columns beside it. The review band gets a person, and asking for its masking expression
+raises rather than quietly returning the raw value.
+
+### Where the clause list is stricter than my own taxonomy
+
+```
+temporal: the taxonomy would allow month and Safe Harbor permits only year
+```
+
+The taxonomy says a temporal category identifies at day precision, which makes a month non
+identifying by its own ordering. Clause C removes every element of a date except the year,
+so a month does not survive either. Deriving the masking target from my own threshold would
+have published a policy that keeps months and calls itself Safe Harbor. The target is written
+down separately, the clause wins, and a check pins the disagreement so neither half can move
+without the other being looked at.
+
+### Most of the warehouse is kept because nothing fired
+
+```
+18 of 42 columns are kept because no rule fired, not because anything is known
+```
+
+That is what the no values rule costs, as a number rather than as a caveat. `pii/profile.py`
+never lets a value reach the process, so the classifier can only count matches of patterns it
+already holds, and a format nobody wrote a predicate for scores zero on all of them. The
+column then lands in exactly the same bucket as one that was genuinely cleared. One of the
+eighteen is planted as something personal.
+
+### The residual risk report is mostly blank, and that is correct
+
+```
+4 of 5 tables cannot be measured at all until somebody works the review queue
+that is the honest state of this report and it is not a bug. a k computed
+around an undecided column is a k for a policy nobody has agreed to.
+```
+
+A k computed around an undecided column is a k for a policy nobody agreed to, so
+`residual_sql` refuses rather than measuring around it. Four of five tables are waiting on a
+reviewer. With a reviewer accepting every queued column, which nobody did and which is an
+upper bound rather than a result:
+
+```
+  table                             k   groups      alone  quasi set
+  analytics.encounter_daily        20        6    0.0000  postal_code
+  raw.claim                        31        2    0.0000  submitted_on
+  raw.device_reading             3043        1    0.0000  taken_at
+  raw.encounter                    22        2    0.0000  admitted_at, discharged_at
+  raw.patient                       1      788    0.6170  city, postal_code, birth_date, sex, created_at
+```
+
+`raw.patient` comes back at k of 1 with 61.7 percent of patients alone in their group, after
+every generalisation the regulation permits.
+
+### The number is a claim about a set somebody chose
+
+The mart reports a comfortable k, and the set it was measured over has one column in it.
+
+```
+  quasi set                         k   groups      alone
+  what the policy measured         20        6    0.0000
+  plus the day, generalised        20        6    0.0000
+  plus department                   1       35    0.0007
+```
+
+`department` is planted not personal. The classifier agrees. It is on no clause list
+anywhere. It still takes the table from k of 20 to k of 1. The residual figure was
+arithmetically correct and it was answering a question about the wrong set, because the set
+came from a classifier that had already missed a column. This is the same shape as the
+taxonomy's two axes: whether a column is personal is not a property of that column.
+
+### What the masking bought on the table that can be measured
+
+```
+  columns                                     k   groups      alone
+  postal_code, birth_date, sex                1      996    0.9940
+  masked: postal3, birth year, sex            1      430    0.2380
+```
+
+Every permitted generalisation applied in full takes `raw.patient` from 99.4 percent of
+people sitting alone to 23.8 percent, and k is still 1. **Satisfying Safe Harbor and
+protecting the people in the table are different properties.** A tool that generates the
+policy and stops has reported the first one and said nothing about the second.
 
 ## The scanner never reads a value
 
@@ -607,8 +730,8 @@ and neither had ever run against anything. It has a fixture now. A rule that has
 ## Running the checks
 
 ```
-python3 tests/run_all.py            295 checks, standard library only
-python3 tests/run_with_duckdb.py    346 checks, needs the driver
+python3 tests/run_all.py            342 checks, standard library only
+python3 tests/run_with_duckdb.py    402 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -637,7 +760,18 @@ pii/profile.py                      10 sites, 10 killed, 0 survivors
 pii/lineage.py                      161 sites, 153 killed, 7 survived, 1 ungraded
   control before: 295 passed, 0 failed
   control after:  295 passed, 0 failed
+
+pii/mask.py                         54 sites, 54 killed, 0 survived, 0 ungraded
+  control before: 342 passed, 0 failed
+  control after:  342 passed, 0 failed
 ```
+
+`pii/mask.py` opened at 46 of 53. All seven survivors were coverage gaps rather than
+equivalent mutants and all seven are closed. Two were the `frozen=True` on the two record
+types, which nothing asserted, so a caller could edit a generated policy and the validation
+would never run again. Four were `resolve_review`, which had checks only behind the database
+runner and therefore none that this pass could see. The last was the default k target, which
+no check could tell from any other number until a table sitting at exactly k of 2 was added.
 
 `pii/lineage.py` opened at 106 of 163 and that is the worst a module has started here. The
 reader is a parser and a parser is mostly branches nothing obvious exercises. Twenty nine
@@ -705,6 +839,33 @@ a pass was valid against a stale cache. Redone from a copy that nothing had ever
 
 ## Known limitations
 
+**A Safe Harbor column reaches neither a mask nor a reviewer.**
+`analytics.encounter_daily.day` is planted `event_date`, so it is in scope. The classifier
+scores it at 0.0000 because the table context rule drops its temporal signal, and 0.0000
+lands in the ignore band. Ignore does not queue. The one column this masking work turned on
+is the one column the tool has no route to act on, and that is the worst outcome the three
+band design can produce.
+
+**The k target defaults to 2 and 2 is a weak bar.** It says one other person shares your
+group. Expert determination work does not use that number. It is here because it is the
+smallest integer that is not 1, which is arithmetic rather than privacy, and picking a
+defensible one needs a population and a threat model this corpus does not have.
+
+**No masked table is written.** Every masking expression is executed, inside the residual
+measurement and inside the checks, and nothing materialises a masked copy of the warehouse.
+Application here means the policy runs and its result is measured, not that a masked table
+exists.
+
+**The group size column is named in the probe rather than discovered.**
+`analytics.encounter_daily` stores one row per group and `encounters` says how many
+admissions it stands for. Counting rows instead of people there reports the table as safer by
+exactly the factor it deduplicated by, which is the failure this module is about, and the
+probe avoids it because the mapping is typed in.
+
+**`masking_expression` implements two of the seven granularities.** `YEAR` and `POSTAL_3`.
+The rest raise rather than returning the column untouched. The taxonomy is wider than the
+applier.
+
 **The planted labels are mine.** Only the Safe Harbor clause list has another author. The
 recall figures are a classifier I wrote graded on a schema I wrote against a scope somebody
 else fixed, and those are three different strengths of evidence sitting in one table.
@@ -715,7 +876,7 @@ pulls from census files and this one cannot.
 **One labelling call of mine moves the headline.** `raw.patient.city` is planted as a postal
 code at the coarse end, on the reading that clause B covers all geographic subdivisions
 smaller than a state. That puts it in scope and makes it a miss. Drop it and recall goes
-from 13/19 at 0.6842 to 13/18 at 0.7222, and the quasi figure from 4/8 to 4/7. Both readings
+from 13/20 at 0.6500 to 13/19 at 0.6842, and the quasi figure from 4/9 to 4/8. Both readings
 are here rather than only the one that reads better.
 
 **Seven of the categories are never reached by any column, and six have no rule either.**
