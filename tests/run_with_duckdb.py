@@ -26,7 +26,8 @@ def main() -> int:
         print("      pip install -r requirements.txt")
         return 2
     return run_checks(
-        MODULES + ["tests.test_warehouse", "tests.test_crawl", "tests.test_profile"],
+        MODULES + ["tests.test_warehouse", "tests.test_crawl", "tests.test_profile",
+                  "tests.test_mask_applied"],
         verbose="-v" in sys.argv)
 
 

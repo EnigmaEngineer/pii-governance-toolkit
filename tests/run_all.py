@@ -27,6 +27,7 @@ MODULES = [
     "tests.test_coverage",
     "tests.test_classify",
     "tests.test_lineage",
+    "tests.test_mask",
     "tests.test_deps",
 ]
 
