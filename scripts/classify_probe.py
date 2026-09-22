@@ -44,8 +44,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pii.classify as classify  # noqa: E402
-from pii import coverage, crawl, naive, profile, safeharbor  # noqa: E402
+from pii import classify, coverage, crawl, lineage, naive, profile, safeharbor  # noqa: E402
 from pii.corpus import generate  # noqa: E402
+from pii import schema  # noqa: E402
 from pii.schema import PLANTED, TABLES, planted_index  # noqa: E402
 from pii.taxonomy import TAXONOMY  # noqa: E402
 
@@ -57,10 +58,38 @@ def connect(path: str, read_only: bool = True):
     return duckdb.connect(path, read_only=read_only)
 
 
+# The lineage graph the classifier's second round reads, set once in `main`. A module
+# level binding rather than an argument threaded through nine sections, because the
+# alternative was nine signature changes to pass one thing that never varies within a run.
+UPSTREAM = None
+
+
+def classify_all(profiles, **kw):
+    """Every section classifies through here, so no section can drift off the graph.
+
+    The ablation and the sweep both used to call `classify_warehouse` directly. Once the
+    second round existed, a section that kept calling it directly would publish a recall
+    figure from a configuration the tool does not ship.
+    """
+    return classify.classify_warehouse(profiles, upstream_tables=UPSTREAM, **kw)
+
+
+def upstream_for(con, profiles):
+    cols = [c.name for c in
+            schema.tables_by_fqn()["analytics.encounter_daily"].columns]
+    derived = lineage.read_insert_select(
+        schema.DERIVED_SQL["analytics.encounter_daily"], cols)
+    keys = lineage.Graph(edges=lineage.foreign_key_edges(con, crawl.ENGINE_SCHEMAS))
+    graph = derived.merge(keys)
+    return graph.upstream_table_map(sorted({p.table for p in profiles}))
+
+
 def classified(con):
+    global UPSTREAM
     crawled = crawl.crawl(con)
     profiles = profile.profile_crawl(con, crawled)
-    return profiles, classify.classify_warehouse(profiles)
+    UPSTREAM = upstream_for(con, profiles)
+    return profiles, classify_all(profiles)
 
 
 def scope_keys():
@@ -191,7 +220,7 @@ def section_ablation(profiles, key_for):
     print("\nARM ABLATION")
     print(RULE)
     real = (classify.name_signals, classify.value_signals, classify.structure_signals)
-    base = {r.address: r.band for r in classify.classify_warehouse(profiles)}
+    base = {r.address: r.band for r in classify_all(profiles)}
     scope = scope_keys()
 
     def run(name=True, value=True, structure=True):
@@ -199,7 +228,7 @@ def section_ablation(profiles, key_for):
         classify.value_signals = real[1] if value else (lambda p: ())
         classify.structure_signals = real[2] if structure else (lambda p: ())
         try:
-            return classify.classify_warehouse(profiles)
+            return classify_all(profiles)
         finally:
             (classify.name_signals, classify.value_signals,
              classify.structure_signals) = real
@@ -392,7 +421,7 @@ def section_context(profiles, key_for):
     print("{:>4} {:>9} {:>8} {:>8}  {}".format(
         "bar", "found", "masked", "wrong", "tables treated as about people"))
     for bar in (0.35, 0.60, 0.70, 0.75, 0.90):
-        res = classify.classify_warehouse(profiles, evidence_bar=bar)
+        res = classify_all(profiles, evidence_bar=bar)
         ins = [r for r in res if key_for(r) in scope]
         by_table = {}
         for r in res:
