@@ -146,6 +146,51 @@ class Graph:
         return Graph(edges=self.edges + other.edges,
                      refusals=self.refusals + other.refusals)
 
+    def upstream_tables(self, table: str,
+                        value_preserving_only: bool = True) -> Tuple[str, ...]:
+        """The tables any column of this one was derived from, walked to the roots.
+
+        `value_preserving_only` is the argument, not the convenience. A count is derived
+        from the rows it counted and carries none of their values, so a table built only
+        out of aggregates is not carrying anything from upstream and should not answer for
+        it. A grouping key is the opposite case and it is the one that matters here: the
+        `GROUP BY` collapsed rows and did not touch the value, so a postal code that came
+        from a table about people is still about those people.
+
+        The star sources an aggregate produces, `raw.encounter.*`, are dropped. A row count
+        names its table and not a column in it, and letting `*` through would make every
+        aggregate look like it carried a value.
+
+        Walked with a frontier rather than by recursion. The recursive version passed no
+        visited set down and a two table cycle put it into the stack limit, which a check
+        caught. `sources_of` threads a `_seen` through its own recursion for the same
+        reason and this is the shape I should have copied in the first place.
+        """
+        out: List[str] = []
+        frontier = [table]
+        seen = {table}
+        while frontier:
+            current = frontier.pop()
+            for e in self.edges:
+                if e.target.table != current or e.source.column == "*":
+                    continue
+                if e.kind is EdgeKind.JOIN_KEY:
+                    continue
+                if value_preserving_only and e.kind not in VALUE_PRESERVING:
+                    continue
+                source = e.source.table
+                if source in seen:
+                    continue
+                seen.add(source)
+                out.append(source)
+                frontier.append(source)
+        return tuple(out)
+
+    def upstream_table_map(self, tables: Sequence[str],
+                           value_preserving_only: bool = True) -> Dict[str, Tuple[str, ...]]:
+        """`upstream_tables` for each of these, which is the shape the classifier wants."""
+        return {t: self.upstream_tables(t, value_preserving_only) for t in tables}
+
 
 # --- the SQL reader ---------------------------------------------------------------
 

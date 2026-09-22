@@ -620,3 +620,100 @@ def check_an_unbalanced_bracket_is_left_alone_rather_than_crashing():
     assert "VARCHAR" not in stripped, stripped
     assert "p.city" in stripped, stripped
     assert lineage._names_in("length(CAST(p.city AS VARCHAR)") == ["p.city"]
+
+
+# Upstream tables, which is what the classifier asks the graph for.
+
+
+def _copy_and_count_graph() -> Graph:
+    """A grouping key copied out of a table and a count taken over it, side by side."""
+    return Graph(edges=(
+        Edge(ColumnRef("raw.patient", "postal_code"),
+             ColumnRef("mart.daily", "postal_code"), EdgeKind.GROUPED),
+        Edge(ColumnRef("raw.encounter", "*"),
+             ColumnRef("mart.daily", "n"), EdgeKind.AGGREGATE),
+        Edge(ColumnRef("raw.patient", "patient_id"),
+             ColumnRef("raw.encounter", "patient_id"), EdgeKind.JOIN_KEY),
+    ))
+
+
+def check_upstream_tables_follows_a_value_preserving_edge():
+    assert _copy_and_count_graph().upstream_tables("mart.daily") == ("raw.patient",)
+
+
+def check_upstream_tables_ignores_an_aggregate_by_default():
+    # `raw.encounter` feeds the count and carries none of its values into it, so a table
+    # built only out of counts is not answering for the table it counted.
+    assert "raw.encounter" not in _copy_and_count_graph().upstream_tables("mart.daily")
+    # A named column behind an aggregate rather than a star, so the default actually
+    # decides something. With the star source the two settings agree and a pass flipping
+    # the default was invisible.
+    named = Graph(edges=(
+        Edge(ColumnRef("raw.encounter", "admitted_at"),
+             ColumnRef("mart.daily", "mean_stay"), EdgeKind.AGGREGATE),))
+    assert named.upstream_tables("mart.daily") == ()
+    assert named.upstream_tables("mart.daily", value_preserving_only=False) == (
+        "raw.encounter",)
+
+
+def check_upstream_tables_can_be_asked_to_include_an_aggregate():
+    got = _copy_and_count_graph().upstream_tables(
+        "mart.daily", value_preserving_only=False)
+    assert "raw.patient" in got
+    # The star source is still dropped, because `raw.encounter.*` names a table and not a
+    # column in it, and letting it through makes every row count look like a carried value.
+    assert "raw.encounter" not in got
+
+
+def check_upstream_tables_ignores_a_join_key():
+    assert _copy_and_count_graph().upstream_tables("raw.encounter") == ()
+
+
+def check_upstream_tables_walks_more_than_one_hop():
+    g = Graph(edges=(
+        Edge(ColumnRef("a.t", "c"), ColumnRef("b.t", "c"), EdgeKind.COPY),
+        Edge(ColumnRef("b.t", "c"), ColumnRef("c.t", "c"), EdgeKind.COPY),
+    ))
+    assert set(g.upstream_tables("c.t")) == {"a.t", "b.t"}
+
+
+def check_upstream_tables_never_reports_the_table_itself():
+    g = Graph(edges=(
+        Edge(ColumnRef("a.t", "x"), ColumnRef("a.t", "y"), EdgeKind.COPY),))
+    assert g.upstream_tables("a.t") == ()
+
+
+def check_upstream_tables_survives_a_cycle():
+    g = Graph(edges=(
+        Edge(ColumnRef("a.t", "c"), ColumnRef("b.t", "c"), EdgeKind.COPY),
+        Edge(ColumnRef("b.t", "c"), ColumnRef("a.t", "c"), EdgeKind.COPY),
+    ))
+    assert g.upstream_tables("a.t") == ("b.t",)
+
+
+def check_upstream_tables_of_an_unknown_table_is_empty():
+    assert _copy_and_count_graph().upstream_tables("nothing.here") == ()
+
+
+def check_the_upstream_map_covers_every_table_it_is_given():
+    g = _copy_and_count_graph()
+    m = g.upstream_table_map(["mart.daily", "raw.patient"])
+    assert sorted(m) == ["mart.daily", "raw.patient"]
+    assert m["raw.patient"] == ()
+
+
+def check_the_upstream_map_carries_the_value_preserving_setting_through():
+    named = Graph(edges=(
+        Edge(ColumnRef("raw.encounter", "admitted_at"),
+             ColumnRef("mart.daily", "mean_stay"), EdgeKind.AGGREGATE),))
+    assert named.upstream_table_map(["mart.daily"]) == {"mart.daily": ()}
+    assert named.upstream_table_map(
+        ["mart.daily"], value_preserving_only=False) == {
+            "mart.daily": ("raw.encounter",)}
+
+
+def check_the_real_mart_traces_back_to_both_source_tables():
+    # The mart's grouping keys come out of `raw.encounter` and `raw.patient`, so both are
+    # upstream by a value preserving edge and neither arrives only through the count.
+    assert set(_mart_graph().upstream_tables("analytics.encounter_daily")) == {
+        "raw.encounter", "raw.patient"}
