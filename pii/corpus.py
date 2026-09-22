@@ -339,3 +339,124 @@ def summarise(c: Corpus) -> Dict[str, object]:
         "nulls_total": sum(null_counts(c).values()),
         "nullable_columns": len(nullable_columns()),
     }
+
+
+# --- the access substrate ------------------------------------------------------------
+#
+# Grants and a query log. Not warehouse rows, and generated here anyway, because the rule
+# this repo keeps is that a module does not manufacture the data it then measures.
+# `pii/access.py` reads these and must not be able to invent them.
+#
+# In a real deployment both come from somewhere else entirely. Snowflake keeps them in
+# `snowflake.account_usage.grants_to_roles` and `query_history`, which is a share on a
+# different database with a different retention window. The adapter that reads those is
+# not built and the README says so rather than shipping a reader nothing has run.
+
+ROLES = ("analyst_bi", "analyst_clinical", "engineer_etl", "auditor_readonly")
+
+# Deliberately lopsided. `analyst_bi` holds the mart and nothing else, which is what a
+# least privilege review would call a well scoped role, and the mart carries a patient's
+# postal code and admission date as grouping keys. That role is the whole point of the
+# access report and it was chosen to be the ordinary looking one rather than the
+# suspicious one.
+ROLE_TABLES: Dict[str, Tuple[str, ...]] = {
+    "analyst_bi": ("analytics.encounter_daily",),
+    "analyst_clinical": ("raw.encounter", "raw.device_reading",
+                         "analytics.encounter_daily"),
+    "engineer_etl": ("raw.patient", "raw.encounter", "raw.claim",
+                     "raw.device_reading", "analytics.encounter_daily"),
+    "auditor_readonly": ("raw.claim",),
+}
+
+USERS: Dict[str, Tuple[str, ...]] = {
+    "analyst_bi": ("dpatel", "rkhan", "tovborg"),
+    "analyst_clinical": ("mchen", "jruiz"),
+    "engineer_etl": ("swhite",),
+    # Two roles, and the report has to count them once. An auditor who also does BI work
+    # is not two people and the earlier version of `exposure` reported them as both a
+    # direct reader and a carrier reader, which double counted the only finding.
+    "auditor_readonly": ("lokafor", "rkhan"),
+}
+
+# Columns a query plausibly names, per table. Short lists, because the log only has to
+# exercise the attribution rules and a longer one would not exercise a new branch.
+QUERIED_COLUMNS: Dict[str, Tuple[str, ...]] = {
+    "analytics.encounter_daily": ("day", "department", "postal_code", "encounters"),
+    "raw.encounter": ("encounter_id", "patient_id", "admitted_at", "department"),
+    "raw.patient": ("patient_id", "postal_code", "birth_date", "sex"),
+    "raw.claim": ("claim_id", "member_number", "submitted_on", "status"),
+    "raw.device_reading": ("reading_id", "encounter_id", "taken_at", "metric"),
+}
+
+STAR_RATE = 0.22
+
+
+def generate_access(seed: int = 20260917, n_queries: int = 400,
+                    start: dt.date = dt.date(2026, 6, 1),
+                    end: dt.date = dt.date(2026, 9, 21)) -> Tuple[list, list, list]:
+    """Grants, role memberships and a query log. Returns them in that order.
+
+    The star rate is the parameter that matters. A log where every query names its columns
+    makes column level access attribution look exact, which is not what a query log is
+    like. At 0.22 roughly a fifth of the history says a table and no column, and the report
+    has to carry that as a floor rather than pretending it away.
+    """
+    from pii.access import Grant, QueryEvent, RoleMember
+
+    if start > end:
+        raise ValueError("access log starts at {} and ends at {}".format(start, end))
+    if n_queries < 1:
+        raise ValueError("a query log with no queries in it measures nothing")
+
+    grants = [
+        Grant(role, table)
+        for role in ROLES
+        for table in ROLE_TABLES[role]
+    ]
+    members = [RoleMember(u, role) for role in ROLES for u in USERS[role]]
+
+    rnd = stream(seed, "query_history")
+    span = (end - start).days
+    user_roles: Dict[str, List[str]] = {}
+    for m in members:
+        user_roles.setdefault(m.user, []).append(m.role)
+
+    events = []
+    people = sorted(user_roles)
+    for i in range(n_queries):
+        user = rnd.choice(people)
+        # A query only reaches a table the user is granted. A log holding a read nobody
+        # was permitted would be a finding about the warehouse and not about this report,
+        # and generating one here would put it in the numerator of every figure.
+        reachable = sorted({t for r in user_roles[user] for t in ROLE_TABLES[r]})
+        table = rnd.choice(reachable)
+        at = start + dt.timedelta(days=rnd.randint(0, span))
+        if rnd.random() < STAR_RATE:
+            events.append(QueryEvent(
+                query_id="q{:04d}".format(i), user=user, at=at,
+                tables=(table,), select_star=True))
+            continue
+        pool = QUERIED_COLUMNS[table]
+        picked = rnd.sample(pool, rnd.randint(1, min(3, len(pool))))
+        events.append(QueryEvent(
+            query_id="q{:04d}".format(i), user=user, at=at,
+            tables=(table,),
+            columns=tuple("{}.{}".format(table, c) for c in sorted(picked))))
+    return grants, members, events
+
+
+def summarise_access(grants, members, events) -> Dict[str, object]:
+    """Facts about the log, computed. Same reason `summarise` exists for the rows."""
+    stars = sum(1 for e in events if e.select_star)
+    named = sum(len(e.columns) for e in events)
+    return {
+        "grants": len(grants),
+        "roles": len({g.role for g in grants}),
+        "members": len(members),
+        "users": len({m.user for m in members}),
+        "queries": len(events),
+        "star_queries": stars,
+        "column_references": named,
+        "first_query": min(e.at for e in events).isoformat(),
+        "last_query": max(e.at for e in events).isoformat(),
+    }
