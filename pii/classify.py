@@ -508,12 +508,19 @@ def table_is_person_linked(results: Sequence[Classification],
 
 
 def classify_table(profiles: Sequence[ColumnProfile],
-                   evidence_bar: float = REVIEW_AT) -> Tuple[Classification, ...]:
+                   evidence_bar: float = REVIEW_AT,
+                   person_linked: Optional[bool] = None) -> Tuple[Classification, ...]:
     """Two passes. Columns alone, then the temporal ones again with the table in view.
 
     The second pass only ever removes evidence. A temporal signal in a table that names
     nobody is dropped, and nothing is added anywhere, so a column this function flags is a
     column `classify_column` flagged too.
+
+    `person_linked` overrides the verdict the columns would give. `None` works it out from
+    the columns, which is what a caller holding one table should pass. A caller that can
+    see where the table came from passes the answer in, because a mart whose grouping keys
+    came out of a table full of patients is about those patients and none of its own
+    columns says so. See `classify_warehouse`.
     """
     if not profiles:
         return ()
@@ -523,7 +530,9 @@ def classify_table(profiles: Sequence[ColumnProfile],
             "classify_table takes one table at a time, got {}".format(sorted(tables)))
 
     first = tuple(classify_column(p) for p in profiles)
-    if table_is_person_linked(first, evidence_bar):
+    linked = (table_is_person_linked(first, evidence_bar)
+              if person_linked is None else person_linked)
+    if linked:
         return first
 
     out: List[Classification] = []
@@ -540,15 +549,76 @@ def classify_table(profiles: Sequence[ColumnProfile],
 def classify_warehouse(
     profiles: Sequence[ColumnProfile],
     evidence_bar: float = REVIEW_AT,
+    upstream_tables: Optional[Dict[str, Sequence[str]]] = None,
 ) -> Tuple[Classification, ...]:
-    """Every column, grouped by table so the second pass has something to read."""
+    """Every column, grouped by table so the second pass has something to read.
+
+    Two rounds when `upstream_tables` is given. Round one is every table on its own
+    columns, which is the only thing that was ever done here. Round two re-runs any table
+    that came back naming nobody, if the tables it was derived from do name somebody.
+
+    Round two exists because of one column. `analytics.encounter_daily.day` is a patient's
+    admission date cast to a day, and on this warehouse 1,386 of 1,444 mart rows are a
+    group of one, so the day really is one person's admission and not a reporting grain.
+    The mart holds no direct identifier, so round one deleted the column's temporal
+    evidence and it scored 0.0000, which is the ignore band, which does not queue. A column
+    in Safe Harbor scope was reaching neither a mask nor a reviewer.
+
+    What round two does is stop deleting evidence. It adds none. The column earns the
+    0.4500 its own name and type were always worth, and 0.4500 is the review band, so a
+    person looks at it. That is the honest end state: the tool cannot tell from the catalog
+    whether a group of one survived the `GROUP BY`, and the number that decides it is a k
+    on the grain that nothing measures at classify time. Asserting the answer would have
+    been the circular version, because the only thing that knows is the planted key.
+
+    The ordering problem is why this is two rounds rather than a walk. The upstream table
+    sorts after the downstream one here, `analytics` before `raw`, so a single pass in name
+    order asks about a verdict it has not reached yet.
+    """
     grouped: Dict[str, List[ColumnProfile]] = {}
     for p in profiles:
         grouped.setdefault(p.table, []).append(p)
+
+    first: Dict[str, Tuple[Classification, ...]] = {}
+    for table in sorted(grouped):
+        first[table] = classify_table(grouped[table], evidence_bar)
+
+    if upstream_tables is None:
+        return tuple(r for table in sorted(first) for r in first[table])
+
+    linked = {t: table_is_person_linked(rs, evidence_bar) for t, rs in first.items()}
     out: List[Classification] = []
     for table in sorted(grouped):
-        out.extend(classify_table(grouped[table], evidence_bar))
+        if linked[table]:
+            out.extend(first[table])
+            continue
+        sources = upstream_tables.get(table, ())
+        if any(linked.get(s, False) for s in sources):
+            out.extend(classify_table(grouped[table], evidence_bar, person_linked=True))
+        else:
+            out.extend(first[table])
     return tuple(out)
+
+
+def person_linked_by_derivation(
+    results: Sequence[Classification],
+    upstream_tables: Dict[str, Sequence[str]],
+    evidence_bar: float = REVIEW_AT,
+) -> Tuple[str, ...]:
+    """Tables naming nobody themselves whose sources name somebody. Reported, not hidden.
+
+    This is round two's input written down so it can be printed. A reader who sees a mart
+    column flagged wants to know which table upstream is the reason, and the answer is a
+    property of the lineage graph rather than of anything in the mart.
+    """
+    by_table: Dict[str, List[Classification]] = {}
+    for r in results:
+        by_table.setdefault(r.table, []).append(r)
+    linked = {t: table_is_person_linked(rs, evidence_bar) for t, rs in by_table.items()}
+    return tuple(sorted(
+        t for t, is_linked in linked.items()
+        if not is_linked and any(linked.get(s, False) for s in upstream_tables.get(t, ()))
+    ))
 
 
 def band_counts(results: Sequence[Classification]) -> Dict[str, int]:

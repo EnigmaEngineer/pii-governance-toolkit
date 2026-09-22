@@ -537,3 +537,181 @@ def check_no_two_token_rules_claim_the_same_needle():
         for n in needles:
             assert n not in seen, "{} claimed by {} and {}".format(n, seen.get(n), key)
             seen[n] = key
+
+
+# The second round, where a derived table answers for the tables it came from.
+#
+# `analytics.encounter_daily.day` is the column all of this is about. It is a patient's
+# admission date cast to a day, it sits in a mart holding no direct identifier, and the
+# table context rule therefore deleted its only evidence and scored it 0.0000. That is the
+# ignore band, and ignore does not queue, so a column in Safe Harbor scope was reaching
+# neither a mask nor a reviewer.
+
+
+def _mart_profiles():
+    """A mart that names nobody, with one temporal column in it."""
+    return (
+        _profile("day", sql_type="DATE", table="analytics.daily"),
+        _profile("department", table="analytics.daily"),
+        _profile("encounters", sql_type="BIGINT", table="analytics.daily"),
+    )
+
+
+def _source_profiles():
+    """A table that does name somebody, and a temporal column beside the name."""
+    return (
+        _profile("email", hits={"email": 0.99}, table="raw.patient"),
+        _profile("admitted_at", sql_type="TIMESTAMP", table="raw.patient"),
+    )
+
+
+def check_a_table_naming_nobody_still_loses_its_temporal_evidence_on_its_own():
+    got = classify_table(_mart_profiles())
+    day = [r for r in got if r.column == "day"][0]
+    assert day.category_key == "not_personal"
+    assert day.confidence == 0.0
+    assert day.band is Band.IGNORE
+
+
+def check_the_same_column_scores_on_its_own_evidence_without_the_table_rule():
+    day = classify_column(_mart_profiles()[0])
+    assert day.category_key == "event_date"
+    assert day.confidence == 0.45
+    assert day.band is Band.REVIEW
+
+
+def check_person_linked_passed_in_keeps_the_temporal_evidence():
+    got = classify_table(_mart_profiles(), person_linked=True)
+    day = [r for r in got if r.column == "day"][0]
+    assert day.category_key == "event_date"
+    assert day.band is Band.REVIEW
+
+
+def check_person_linked_false_deletes_it_even_where_the_columns_disagree():
+    # The override runs both ways. A caller that can see the table was built out of
+    # reference data says so, and the columns do not get to overrule it.
+    got = classify_table(_source_profiles(), person_linked=False)
+    admitted = [r for r in got if r.column == "admitted_at"][0]
+    assert admitted.category_key == "not_personal"
+
+
+def check_round_two_rescues_a_mart_derived_from_a_person_linked_table():
+    profiles = _mart_profiles() + _source_profiles()
+    upstream = {"analytics.daily": ("raw.patient",), "raw.patient": ()}
+    got = classify_warehouse(profiles, upstream_tables=upstream)
+    day = [r for r in got if r.address == "analytics.daily.day"][0]
+    assert day.category_key == "event_date"
+    assert day.confidence == 0.45
+    assert day.band is Band.REVIEW
+
+
+def check_round_two_adds_no_evidence_it_only_stops_deleting_it():
+    # The rescued score equals the score the column earns with no table rule at all. If
+    # round two were adding anything these two numbers would differ, and a classifier that
+    # invents evidence for a column because of where it came from is the circular version.
+    profiles = _mart_profiles() + _source_profiles()
+    upstream = {"analytics.daily": ("raw.patient",), "raw.patient": ()}
+    rescued = [r for r in classify_warehouse(profiles, upstream_tables=upstream)
+               if r.address == "analytics.daily.day"][0]
+    alone = classify_column(_mart_profiles()[0])
+    assert rescued.confidence == alone.confidence
+    assert rescued.category_key == alone.category_key
+    assert rescued.signals == alone.signals
+
+
+def check_round_two_does_nothing_when_the_upstream_table_names_nobody_either():
+    profiles = _mart_profiles() + (
+        _profile("code", table="ref.lookup"), _profile("label", table="ref.lookup"))
+    upstream = {"analytics.daily": ("ref.lookup",), "ref.lookup": ()}
+    got = classify_warehouse(profiles, upstream_tables=upstream)
+    day = [r for r in got if r.address == "analytics.daily.day"][0]
+    assert day.category_key == "not_personal"
+
+
+def check_round_two_leaves_a_column_with_no_temporal_evidence_alone():
+    profiles = _mart_profiles() + _source_profiles()
+    upstream = {"analytics.daily": ("raw.patient",), "raw.patient": ()}
+    got = classify_warehouse(profiles, upstream_tables=upstream)
+    dept = [r for r in got if r.address == "analytics.daily.department"][0]
+    assert dept.category_key == "not_personal"
+    assert dept.confidence == 0.0
+
+
+def check_passing_no_upstream_map_is_the_old_behaviour_exactly():
+    profiles = _mart_profiles() + _source_profiles()
+    assert classify_warehouse(profiles) == classify_warehouse(profiles, upstream_tables=None)
+
+
+def check_an_empty_upstream_map_is_not_the_same_as_none():
+    # `{}` says every table was asked about and none has a source. `None` says nobody
+    # looked. They produce the same answer here and they are different claims, so the
+    # distinction is asserted rather than left to a reader of the signature.
+    profiles = _mart_profiles() + _source_profiles()
+    assert classify_warehouse(profiles, upstream_tables={}) == classify_warehouse(profiles)
+
+
+def check_round_two_does_not_depend_on_table_name_order():
+    # The mart sorts before its source, `analytics` before `raw`, which is why this is two
+    # rounds rather than one walk in name order. Renaming the source to sort first must
+    # not change any answer.
+    mart = _mart_profiles()
+    src = tuple(
+        _profile(p.column, sql_type=p.sql_type, hits=p.pattern_hits, table="aaa.source")
+        for p in _source_profiles())
+    got = classify_warehouse(mart + src,
+                             upstream_tables={"analytics.daily": ("aaa.source",)})
+    day = [r for r in got if r.address == "analytics.daily.day"][0]
+    assert day.category_key == "event_date"
+
+
+def check_person_linked_by_derivation_names_the_rescued_table():
+    profiles = _mart_profiles() + _source_profiles()
+    upstream = {"analytics.daily": ("raw.patient",), "raw.patient": ()}
+    first = classify_warehouse(profiles)
+    assert classify.person_linked_by_derivation(first, upstream) == ("analytics.daily",)
+
+
+def check_person_linked_by_derivation_is_empty_when_nothing_is_rescued():
+    first = classify_warehouse(_source_profiles())
+    assert classify.person_linked_by_derivation(first, {"raw.patient": ()}) == ()
+
+
+def check_an_upstream_table_nobody_classified_does_not_rescue_anything():
+    # The lookup defaults to False, and the default is the case where lineage names a
+    # table the crawl never profiled. Defaulting to True would rescue a mart on the
+    # strength of a table nobody has looked at, which is the opposite of the argument for
+    # doing this from lineage at all.
+    profiles = _mart_profiles()
+    got = classify_warehouse(profiles, upstream_tables={
+        "analytics.daily": ("raw.never_profiled",)})
+    day = [r for r in got if r.address == "analytics.daily.day"][0]
+    assert day.category_key == "not_personal"
+
+
+def check_person_linked_by_derivation_ignores_an_unclassified_source():
+    first = classify_warehouse(_mart_profiles())
+    assert classify.person_linked_by_derivation(
+        first, {"analytics.daily": ("raw.never_profiled",)}) == ()
+
+
+def check_person_linked_by_derivation_skips_a_table_that_names_somebody_itself():
+    # A table holding a direct identifier is person linked on its own evidence and there
+    # is nothing to rescue, so it must not appear in this list even where its sources are
+    # also person linked. The report is about tables the column rule got wrong.
+    profiles = _source_profiles() + tuple(
+        _profile(p.column, sql_type=p.sql_type, hits=p.pattern_hits, table="raw.copy")
+        for p in _source_profiles())
+    first = classify_warehouse(profiles)
+    got = classify.person_linked_by_derivation(
+        first, {"raw.copy": ("raw.patient",), "raw.patient": ()})
+    assert got == ()
+
+
+def check_two_readings_of_one_fact_needs_both_thresholds():
+    # `or` rather than `and`, because one category carrying a threshold and the other not
+    # is precisely the case where the two are not the same fact at two grains. Flipping
+    # the operator sent a None into the family comparison and nothing failed.
+    assert not classify.two_readings_of_one_fact("birth_date", "person_name")
+    assert not classify.two_readings_of_one_fact("person_name", "birth_date")
+    assert not classify.two_readings_of_one_fact("person_name", "email")
+    assert classify.two_readings_of_one_fact("birth_date", "event_date")
