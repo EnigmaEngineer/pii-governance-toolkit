@@ -27,7 +27,7 @@ def main() -> int:
         return 2
     return run_checks(
         MODULES + ["tests.test_warehouse", "tests.test_crawl", "tests.test_profile",
-                  "tests.test_mask_applied"],
+                  "tests.test_mask_applied", "tests.test_compliance_document"],
         verbose="-v" in sys.argv)
 
 
