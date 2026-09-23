@@ -126,8 +126,8 @@ def main() -> int:
 
         profiles = profile.profile_crawl(con, crawled)
         # Deliberately without the upstream map. This section measures what propagation
-        # adds on top of a column's own answer, and since day 6 the classifier's own
-        # answer can itself be lineage informed. Passing the graph here would compare a
+        # adds on top of a column's own answer, and the classifier's own answer can
+        # itself be lineage informed now. Passing the graph here would compare a
         # lineage informed answer against a lineage informed answer and call the
         # difference the value of lineage. The interaction is real and it is named in the
         # README rather than smoothed over.

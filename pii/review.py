@@ -1,6 +1,6 @@
 """The review queue, and the record of what was decided in it.
 
-The review band has existed since day 3 and until now it was a count. Nine columns scored
+The review band arrived with the confidence score and for a long time it was a count. Nine columns scored
 between the two thresholds and the tool said so and stopped. That is the shape most
 classifiers ship: a confidence, a band, and an implicit assumption that somebody else
 builds the part where a person acts on it.

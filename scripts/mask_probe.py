@@ -29,10 +29,11 @@ from pii.taxonomy import TAXONOMY, Identifiability  # noqa: E402
 
 RULE = "-" * 96
 
-# The mart stores one row per group and `encounters` says how many admissions that row
-# stands for. Counting rows there would report the table as safer than it is by exactly the
-# factor its GROUP BY deduplicated by.
-WEIGHTS = {"analytics.encounter_daily": "encounters"}
+# The group size column is read off the lineage graph by `mask.weight_for` rather than
+# typed in here. It used to be a dict on this line, which meant the mart was measured
+# correctly on the one warehouse whose answer I already knew and by row count everywhere
+# else, and reporting a pre aggregated table by row count is the exact failure this script
+# exists to demonstrate.
 
 
 def rule(title):
@@ -85,7 +86,7 @@ def section_absence(policies):
     print("\n{} of them are planted as something personal".format(len(wrong)))
 
 
-def section_residual(con, policies):
+def section_residual(con, policies, graph):
     rule("WHAT IS LEFT AFTER THE POLICY IS APPLIED")
     print("k is the smallest group on the masked quasi set. k of 1 means somebody is")
     print("alone in their group and the masking did not protect them.\n")
@@ -100,7 +101,7 @@ def section_residual(con, policies):
     for table in sorted(by_table):
         ps = by_table[table]
         try:
-            r = mask.measure_residual(con, table, ps, weight=WEIGHTS.get(table))
+            r = mask.measure_residual(con, table, ps, weight=mask.weight_for(graph, table))
         except ValueError as exc:
             print("  {:<30} {}".format(table, str(exc).split(". ")[0]))
             continue
@@ -127,7 +128,7 @@ def section_residual(con, policies):
         ps = [mask.resolve_review(p, True) if p.action is mask.Action.REVIEW else p
               for p in by_table[table]]
         try:
-            r = mask.measure_residual(con, table, ps, weight=WEIGHTS.get(table))
+            r = mask.measure_residual(con, table, ps, weight=mask.weight_for(graph, table))
         except ValueError as exc:
             print("  {:<30} {}".format(table, str(exc).split(". ")[0]))
             continue
@@ -200,7 +201,7 @@ def main():
         crawled = crawl.crawl(con)
         profiles = profile.profile_crawl(con, crawled)
         # The policy is the shipped artefact, so it is generated from the shipped
-        # classifier configuration, which since day 6 reads the lineage graph.
+        # classifier configuration, which reads the lineage graph.
         cols = [c.name for c in
                 schema.tables_by_fqn()["analytics.encounter_daily"].columns]
         graph = lineage.read_insert_select(
@@ -220,7 +221,7 @@ def main():
 
         section_policy(policies)
         section_absence(policies)
-        section_residual(con, policies)
+        section_residual(con, policies, graph)
         section_the_set_is_the_problem(con, policies)
         section_unmasked_comparison(con)
         return 0

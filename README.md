@@ -18,7 +18,11 @@ pip install -r requirements.txt
 python3 scripts/plant.py --db /tmp/pii.duckdb --key
 python3 scripts/crawl_probe.py --db /tmp/pii.duckdb
 python3 scripts/classify_probe.py --db /tmp/pii.duckdb
+python3 scripts/compliance_report.py --db /tmp/pii.duckdb
 ```
+
+The last one is the artefact. Everything else is a probe I run to find out whether I was
+wrong about something.
 
 ## What is here
 
@@ -34,6 +38,7 @@ pii/lineage.py      column level edges, recovered from the statement that built 
 pii/mask.py         masking policy generation, application, and the k left afterwards
 pii/review.py       the queue a person works, ordered by what a decision frees
 pii/access.py       who could have read a column, and who did
+pii/compliance.py   the report, and the questions it refuses to answer
 pii/naive.py        the obvious name and regex scan, kept as a floor to measure against
 pii/coverage.py     grading the floor against the clause list
 pii/reidentify.py   uniqueness and k anonymity over quasi identifiers
@@ -75,6 +80,9 @@ pii/rng.py          named random streams
                                           |
                           pii/coverage.py   pii/reidentify.py
                           what it finds     who it still exposes
+                                          |
+                                  pii/compliance.py
+                            the document, answers and refusals
 ```
 
 The arrow back into `pii/classify.py` is the one edge worth pointing at. The classifier
@@ -382,8 +390,8 @@ accept threshold with both of those numbers on the screen, so the separation is 
 about this warehouse rather than a property of the method.
 
 The third line used to read `18 columns, 1 of them in Safe Harbor scope`, and that one
-column was the worst outcome this three band design can produce. A column in scope,
-scored 0.0000, therefore in the ignore band, and the ignore band does not queue. It
+column was the worst outcome this three band design can produce. A column in scope that
+scored 0.0000 landed in the ignore band, and the ignore band does not queue. It
 reached neither a mask nor a reviewer. It is fixed and the fix was not to make the ignore
 band queue.
 
@@ -399,7 +407,7 @@ raw.claim.payer_name                           person_name              0.40 rev
 
 `created_at` is the row's load time. `admitted_at`, `discharged_at` and `taken_at` are
 dates tied to a patient, and clause C makes every element of those an identifier except the
-year. All four are timestamps, all four end in `_at`, and three of them have a distinct
+year. All four are timestamps and all four end in `_at`. Three of them have a distinct
 count equal to the row count. **No property of the column separates them.** What separates
 them is where the value came from, and this classifier cannot see that.
 
@@ -416,8 +424,8 @@ percent of that table the day is one patient's single admission, sitting in the 
 their postal code. The rule that drops the signal still fires and the reason it gave was
 wrong. What it turns on is whether the grouping is coarse enough to hide anybody, and
 nothing in the classifier measures that. **The planted label now reads `event_date` and the
-recall figures above carry the cost.** The denominator went from 19 to 20, the classifier
-still calls the column not personal, and that is a miss rather than a find. Keeping an
+recall figures above carry the cost.** The denominator went from 19 to 20 and the classifier
+still calls the column not personal, so that is a miss rather than a find. Keeping an
 answer key the data contradicts in order to protect a published number is the trade this
 repo is not going to make. See `scripts/lineage_probe.py` and `scripts/mask_probe.py`.
 
@@ -802,8 +810,8 @@ A reviewer handed a mart column called `day` with a catalog type and nothing els
 reasonably call it a reporting grain and be wrong. The `came from` line is what changes the
 answer.
 
-Decisions are recorded rather than applied and forgotten. A reviewer, a date and a reason,
-all three required by the constructor, because an unattributed decision with no reason is
+Decisions are recorded rather than applied and forgotten. A reviewer and a date and a
+reason, all three required by the constructor. An unattributed decision with no reason is
 the row an auditor asks about and nobody can answer six months later.
 
 ```
@@ -965,6 +973,98 @@ interval are printed and neither is called the number.
 python3 scripts/access_probe.py --db /tmp/pii.duckdb
 ```
 
+## The report an auditor gets, and the twenty five answers in it
+
+Everything above is a probe. A probe is a thing I run to find out whether I was wrong. The
+artefact somebody outside this repo actually receives is one document, and
+`pii/compliance.py` assembles it out of the modules that already have checks behind them.
+It classifies nothing and measures no k of its own.
+
+```
+python3 scripts/compliance_report.py --db /tmp/pii.duckdb --out docs/sample-compliance-report.md
+```
+
+The committed output is in [`docs/sample-compliance-report.md`](docs/sample-compliance-report.md)
+and the header is the whole design:
+
+```
+**25 of 58 questions answered. 33 refused, and 31 of those close when somebody does something.**
+```
+
+Fifty eight questions, twenty five answers. I expected that number to embarrass me when I
+first printed it and it is the most defensible thing in the repo.
+
+### A refusal is a record
+
+The modules underneath already decline to answer things. `mask.residual_sql` raises rather
+than measure k around a column nobody has decided. `access.unanswerable` returns the
+columns where the query log gives a floor of zero under a ceiling above it. Both refusals
+are correct, and on the way into a document both of them turn into whitespace, because a
+renderer writes the rows it has and says nothing at all about the rows it does not have.
+
+So a refusal is a dataclass. It carries the question and the subject it is about. Then why
+the tool will not answer it and what would close it.
+
+```
+`raw.patient` what is the smallest group left after masking? cannot measure residual risk
+on raw.patient while raw.patient.city is unresolved. Closes when the columns it names are
+decided in the review queue.
+```
+
+Thirty three of those, from four distinct questions:
+
+```
+  16  did anybody read this column
+   2  is this clause satisfied
+  10  is this column personal data
+   5  what is the smallest group left after masking
+```
+
+The grouping matters more than the total. Thirty three refusals reads as a broken tool.
+Four questions refused thirty three times reads as what it is, which is a small number of
+missing facts about the input, repeated once per subject.
+
+### The field that made me lie
+
+`closes_when` is required, and requiring it was right for thirty one of them and wrong for
+two. Safe Harbor clause E is fax numbers, which this taxonomy folds into telephone numbers
+because a fax number and a phone number are the same string. Clause R is "any other unique
+identifying number, characteristic or code", whose membership is a property of the values
+rather than of the column.
+
+Neither closes. Nothing anybody does to this tool closes them. But the field was a required
+string, so the first version of the report told a reader that both would close when the
+taxonomy gained a category, which is a promise I had no business making and which would not
+have helped either clause.
+
+`DOES_NOT_CLOSE` is a value now rather than a sentence, so the header can count them and a
+reader can tell a backlog from a boundary. Thirty one of the thirty three are work somebody
+has not done. Two are facts about what a scan driven by metadata can represent at all.
+
+### The document is graded against the data it came from
+
+Every other check in this repo compares a structure against another structure, and both
+sides come out of the same builder, so none of them can catch a renderer quietly dropping a
+section. `compliance.undelivered` takes the report and the rendered text and returns the
+refusal subjects the text does not name. One side is a tuple and the other side is English.
+
+It refuses to run on a report that refused nothing, because a check with an empty left hand
+side passes having compared nothing, and that has been the single most common defect in
+this whole repo.
+
+The script runs the control on every invocation. It renders a second time with the
+refusals deliberately dropped and fails if that is not detected.
+
+```
+checked 33 refusals survived rendering, control named 18 subjects when they were dropped
+```
+
+Eighteen rather than thirty three, because the subjects repeat across questions.
+
+A separate check rebuilds the whole report from a fresh warehouse and compares it against
+the committed file line by line. The document in `docs/` is the only published thing here
+that nobody reads daily, which makes it the one most likely to be quietly wrong.
+
 ## The scanner never reads a value
 
 `pii/profile.py` sends predicates down to the database and gets counts back. What crosses
@@ -1029,8 +1129,8 @@ and neither had ever run against anything. It has a fixture now. A rule that has
 ## Running the checks
 
 ```
-python3 tests/run_all.py            466 checks, standard library only
-python3 tests/run_with_duckdb.py    526 checks, needs the driver
+python3 tests/run_all.py            496 checks, standard library only
+python3 tests/run_with_duckdb.py    561 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -1077,12 +1177,30 @@ control after: 466 passed, 0 failed, 466 checks
 pii/classify.py again, 94 sites     93 killed, 1 survived, 0 ungraded
 pii/lineage.py again, 170 sites    161 killed, 7 survived, 2 ungraded
   both over three slices with the control clean at every end
+
+pii/compliance.py                   29 sites, 29 killed, 0 survived, 0 ungraded
+pii/mask.py again, 61 sites         61 killed, 0 survived, 0 ungraded
+control before: 505 passed, 0 failed, 505 checks in 1.01 s
+control after: 505 passed, 0 failed, 505 checks
 ```
 
 The figures above `pii/access.py` are from the run that first graded each module and the
-control counts are what the suite stood at on that date. The five below are from the latest
+control counts are what the suite stood at on that date. The rest are from the latest
 run. Both are here because replacing the old ones would hide that two modules were graded
 twice and one of them got worse before it got better.
+
+Every figure from `pii/access.py` down was re-run in one session against the final tree,
+one module per call from a freshly extracted copy, and all five reproduced exactly. A kill
+count is a count and a count reproduces or it is broken, so there is no tolerance band on
+that pass. The control moved from 466 to 496 because the suite grew, and the site and kill
+counts did not move at all.
+
+`pii/compliance.py` opened at 24 of 29. Three survivors were `frozen=True` on the three
+record types, which is the fourth module in this repo to ship that gap. The other two were
+worse. One was the recall numerator in the report's own coverage row and the other was the
+subtraction counting clauses that reach a category, so both sat in figures the document
+publishes and neither had anything asserting it. A mutant inside a printed number is the
+expensive kind, because the number is the part somebody quotes.
 
 `pii/access.py` opened at 46 of 54 and finished at 56 of 56. Four survivors were `frozen=True` on the four record
 types, which is the same gap `pii/mask.py` had and which nothing had learned from. One was
@@ -1106,7 +1224,7 @@ granularity is missing, and with the guard flipped to require both, `granularity
 of a missing one compares unequal to any real family and the function returns the same
 answer by a different route.
 
-`pii/lineage.py` re-graded at 161 of 170 with the same seven survivors day 4 left in the
+`pii/lineage.py` re-graded at 161 of 170 with the same seven survivors still sitting in the
 parser. The two new methods added nine sites and eight are killed. The ninth is the cycle
 guard in `upstream_tables`, reported ungraded because flipping its membership test makes
 the walk run forever, which is precisely what a broken cycle guard does. The first version
@@ -1231,16 +1349,30 @@ measurement and inside the checks, and nothing materialises a masked copy of the
 Application here means the policy runs and its result is measured, not that a masked table
 exists.
 
-**The group size column is named in the probe rather than discovered.**
-`analytics.encounter_daily` stores one row per group and `encounters` says how many
-admissions it stands for. Counting rows instead of people there reports the table as safer by
-exactly the factor it deduplicated by, which is the failure this module is about, and the
-probe avoids it because the mapping is typed in.
+**The group size column is discovered now, and the discriminator is narrow.**
+`mask.weight_for` reads it off the lineage graph. A `count(*)` names no field, so the
+reader writes it as an `AGGREGATE` edge whose source column is a literal `*`, and that star
+is the entire test. It picks `encounters` on the mart and nothing on the four raw tables.
+`mean_length_of_stay_h` is also an `AGGREGATE` target and its sources are named columns, so
+it is an average over rows rather than a count of them, and without the star test it would
+be a second candidate. Two candidates refuse rather than guess.
+
+What this does not cover is a mart whose group size was written by hand rather than derived
+by a statement this reader parsed. There the graph has no edge and the table is counted by
+rows, which is the original defect with a narrower blast radius. It used to be a dict typed
+into two files, which meant the mart was measured correctly on the one warehouse whose
+answer I already knew.
+
+**The compliance report has no addressee, no date and no signature.** It is a document
+generated from a scan. Whether the thing a regulator accepts also needs a named
+determination, a retention statement and somebody's signature on it is a question about
+compliance rather than about scanning, and the answer is almost certainly yes. What is here
+is the evidence such a document would be built on.
 
 **The masking policy blocks its own measurement everywhere now.** All five tables hold at
-least one undecided column, so `residual_sql` refuses on all five. The upper bound pass,
-where a reviewer is assumed to accept everything, is the only residual table in the README
-with numbers in it, and it is labelled a hypothesis rather than a result.
+least one undecided column, so `residual_sql` refuses on all five. The only residual table
+in the README with numbers in it is the upper bound pass, where a reviewer is assumed to
+accept everything, and it is labelled a hypothesis rather than a result.
 
 **`masking_expression` implements two of the seven granularities.** `YEAR` and `POSTAL_3`.
 The rest raise rather than returning the column untouched. The taxonomy is wider than the

@@ -5,7 +5,7 @@
 The first section is the queue as a reviewer gets it. The second is the ordering argument,
 because a queue is only a queue if its order carries information, and the first version of
 this one did not. The third works the queue with decisions recorded here and reports which
-tables become measurable, which is the thing day 5 left blocked.
+tables become measurable, which is the thing the masking policy left blocked.
 
 The decisions in section three are mine and they are stamped as mine. They are not the
 tool's answers and nothing here grades the classifier against them.
