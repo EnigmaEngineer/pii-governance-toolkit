@@ -54,14 +54,14 @@ fails rather than passing quietly.
 
 The measurement is what settles it. `scripts/coverage_probe.py` runs a deliberately naive
 name and regex scan over the sample schema and grades it against the HIPAA Safe Harbor
-clause list. Nineteen of the forty two columns are in scope under that list:
+clause list. Twenty of the forty two columns are in scope under that list:
 
 ```
-recall, names only         10/19  0.5263
-recall, names plus values  13/19  0.6842
+recall, names only         10/20  0.5000
+recall, names plus values  13/20  0.6500
 
   direct     9/11  0.8182
-  quasi      4/8  0.5000
+  quasi      4/9  0.4444
 ```
 
 The obvious scan is most of the way there on direct identifiers and a coin flip on quasi
@@ -78,9 +78,10 @@ The columns it walks past are the argument in one block:
   raw.claim.member_number                  health_plan_id   direct
   raw.device_reading.device_serial         device_id        direct
   raw.device_reading.taken_at              event_date       quasi
+  analytics.encounter_daily.day            event_date       quasi
 ```
 
-Three of the six are timestamps. No column name heuristic is ever going to call
+Four of the seven are timestamps. No column name heuristic is ever going to call
 `admitted_at` personal data, and clause C of Safe Harbor says every element of a date tied
 to an individual is an identifier except the year.
 
