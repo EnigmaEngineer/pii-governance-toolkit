@@ -35,6 +35,7 @@ from typing import Dict, Optional, Sequence, Tuple
 
 from pii.classify import ACCEPT_AT, Arm, Band, Classification, Signal
 from pii.crawl import _quote
+from pii.lineage import EdgeKind
 from pii.taxonomy import (
     TAXONOMY,
     Granularity,
@@ -401,6 +402,50 @@ def residual_sql(table: str,
         "FROM (SELECT {} AS s FROM {} GROUP BY {})".format(
             size, _quote_fqn(table), grain)
     )
+
+
+def weight_candidates(graph, table: str) -> Tuple[str, ...]:
+    """Columns of `table` that hold a count of the rows each output row stands for.
+
+    The lineage reader writes a `count(*)` as an AGGREGATE edge whose source column is a
+    literal `*`, because the count names no field and depends on every source table. That
+    star is the whole discriminator. `mean_length_of_stay_h` is also an AGGREGATE target on
+    this warehouse and its sources are named columns, so it is an average over rows and not
+    a count of them.
+
+    This used to be a dict typed into two scripts, which meant a mart in somebody else's
+    warehouse was measured by row count and reported safer than it is by exactly the factor
+    its GROUP BY deduplicated by. That is the precise failure this module exists to catch
+    and supplying the answer by hand is how a tool avoids catching it.
+    """
+    found = set()
+    for edge in graph.edges:
+        if edge.kind is not EdgeKind.AGGREGATE:
+            continue
+        if edge.source.column != "*":
+            continue
+        if edge.target.table != table:
+            continue
+        found.add(edge.target.column)
+    return tuple(sorted(found))
+
+
+def weight_for(graph, table: str) -> Optional[str]:
+    """The one weight column, or a refusal when the graph cannot pick.
+
+    None means the table is not pre-aggregated and rows are people, which is the ordinary
+    case and the right default. Two candidates is not a default, it is a question, and
+    guessing between them silently is worse than the typed in constant this replaced.
+    """
+    candidates = weight_candidates(graph, table)
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        raise ValueError(
+            "{} has {} columns that could be its group size, {}. Pass the one you mean "
+            "rather than letting this pick".format(
+                table, len(candidates), ", ".join(candidates)))
+    return candidates[0]
 
 
 def measure_residual(con,

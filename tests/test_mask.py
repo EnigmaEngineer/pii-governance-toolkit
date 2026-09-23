@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pii import mask
 from pii.classify import Band, Classification, Signal, Arm
+from pii.lineage import ColumnRef, Edge, EdgeKind, Graph
 from pii.taxonomy import TAXONOMY, Granularity, Identifiability
 
 
@@ -403,3 +404,86 @@ def check_measure_residual_passes_the_weight_through_to_the_statement():
     con = _StubCon((20, 6, 0, 1504))
     mask.measure_residual(con, "m", _mart_policies(), weight="encounters")
     assert 'sum("encounters")' in con.sql
+
+
+# Where the group size column comes from
+
+
+def _g(*edges):
+    return Graph(edges=tuple(edges))
+
+
+def _e(src, tgt, kind, detail="x"):
+    st, sc = src.rsplit(".", 1)
+    tt, tc = tgt.rsplit(".", 1)
+    return Edge(ColumnRef(st, sc), ColumnRef(tt, tc), kind, detail)
+
+
+# The mart shape. `encounters` is a count(*), which the reader writes with a star for the
+# source column, and `mean_length_of_stay_h` is an average over named columns. Both are
+# AGGREGATE targets and only the first is a group size.
+MART = _g(
+    _e("raw.encounter.*", "analytics.encounter_daily.encounters", EdgeKind.AGGREGATE),
+    _e("raw.patient.*", "analytics.encounter_daily.encounters", EdgeKind.AGGREGATE),
+    _e("raw.encounter.admitted_at", "analytics.encounter_daily.mean_length_of_stay_h",
+       EdgeKind.AGGREGATE),
+    _e("raw.patient.postal_code", "analytics.encounter_daily.postal_code",
+       EdgeKind.GROUPED),
+    _e("raw.encounter.admitted_at", "analytics.encounter_daily.day", EdgeKind.CAST),
+)
+
+
+def check_a_count_star_aggregate_is_the_group_size():
+    assert mask.weight_candidates(MART, "analytics.encounter_daily") == ("encounters",)
+    assert mask.weight_for(MART, "analytics.encounter_daily") == "encounters"
+
+
+def check_an_aggregate_over_named_columns_is_not_a_group_size():
+    # The whole discriminator. Without the star test `mean_length_of_stay_h` is a second
+    # candidate, and a mean is not a count of anything.
+    assert "mean_length_of_stay_h" not in mask.weight_candidates(
+        MART, "analytics.encounter_daily")
+
+
+def check_two_count_star_edges_into_one_column_are_one_candidate():
+    # `encounters` has two edges, one per source table, because the count depends on both.
+    # Counting edges rather than columns would report two candidates and refuse.
+    assert len(MART.into("analytics.encounter_daily.encounters")) == 2
+    assert len(mask.weight_candidates(MART, "analytics.encounter_daily")) == 1
+
+
+def check_a_table_with_no_aggregate_has_no_weight():
+    assert mask.weight_candidates(MART, "raw.patient") == ()
+    assert mask.weight_for(MART, "raw.patient") is None
+
+
+def check_a_grouped_edge_is_not_a_group_size_even_though_it_came_from_a_group_by():
+    g = _g(_e("raw.patient.postal_code", "m.postal_code", EdgeKind.GROUPED))
+    assert mask.weight_candidates(g, "m") == ()
+
+
+def check_two_candidates_refuse_rather_than_pick():
+    g = _g(
+        _e("raw.a.*", "m.rows", EdgeKind.AGGREGATE),
+        _e("raw.b.*", "m.n_visits", EdgeKind.AGGREGATE),
+    )
+    assert mask.weight_candidates(g, "m") == ("n_visits", "rows")
+    assert _raises(lambda: mask.weight_for(g, "m"), ValueError)
+
+
+def check_the_refusal_names_both_candidates():
+    g = _g(
+        _e("raw.a.*", "m.rows", EdgeKind.AGGREGATE),
+        _e("raw.b.*", "m.n_visits", EdgeKind.AGGREGATE),
+    )
+    try:
+        mask.weight_for(g, "m")
+    except ValueError as exc:
+        assert "n_visits" in str(exc) and "rows" in str(exc)
+    else:
+        raise AssertionError("two candidates were not refused")
+
+
+def check_a_star_aggregate_into_another_table_is_not_this_tables_weight():
+    g = _g(_e("raw.a.*", "other.rows", EdgeKind.AGGREGATE))
+    assert mask.weight_candidates(g, "m") == ()
