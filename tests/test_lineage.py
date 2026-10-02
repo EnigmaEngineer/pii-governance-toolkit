@@ -23,20 +23,16 @@ from pii.lineage import ColumnRef, Edge, EdgeKind, Graph  # noqa: E402
 MART = "analytics.encounter_daily"
 MART_COLUMNS = ["day", "department", "postal_code", "encounters", "mean_length_of_stay_h"]
 
-
 def _mart_graph() -> Graph:
     return lineage.read_insert_select(schema.DERIVED_SQL[MART], MART_COLUMNS)
 
-
 def _kinds(graph: Graph):
     return {(e.source.address, e.target.address): e.kind for e in graph.edges}
-
 
 def check_the_mart_statement_parses_with_no_refusals():
     g = _mart_graph()
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert len(g.edges) == 7, len(g.edges)
-
 
 def check_a_grouping_key_is_not_an_aggregate():
     # The one people get wrong. A GROUP BY drops duplicate rows and leaves the values in
@@ -45,13 +41,11 @@ def check_a_grouping_key_is_not_an_aggregate():
     assert kinds[("raw.patient.postal_code", MART + ".postal_code")] is EdgeKind.GROUPED
     assert kinds[("raw.encounter.department", MART + ".department")] is EdgeKind.GROUPED
 
-
 def check_a_cast_is_read_as_a_cast_and_carries_the_target_type():
     g = _mart_graph()
     edge = [e for e in g.edges if e.target.column == "day"][0]
     assert edge.kind is EdgeKind.CAST, edge.kind
     assert "DATE" in edge.detail, edge.detail
-
 
 def check_the_type_inside_a_cast_is_not_read_as_a_column():
     # This failed on the first run of the reader against the real statement. `DATE` came
@@ -60,7 +54,6 @@ def check_the_type_inside_a_cast_is_not_read_as_a_column():
     names = {e.source.column for e in g.edges}
     assert "DATE" not in names, sorted(names)
     assert "date" not in names, sorted(names)
-
 
 def check_a_row_count_names_no_column_and_is_still_a_derivation():
     g = _mart_graph()
@@ -71,19 +64,16 @@ def check_a_row_count_names_no_column_and_is_still_a_derivation():
     # And the target is therefore not a root, because it did come from somewhere.
     assert MART + ".encounters" not in g.roots([MART + ".encounters"])
 
-
 def check_an_aggregate_over_two_columns_records_both():
     g = _mart_graph()
     sources = {e.source.address for e in g.into(MART + ".mean_length_of_stay_h")}
     assert sources == {"raw.encounter.admitted_at", "raw.encounter.discharged_at"}, sources
-
 
 def check_a_function_name_is_not_a_column():
     g = _mart_graph()
     names = {e.source.column for e in g.edges}
     for word in ("count", "avg", "date_diff"):
         assert word not in names, (word, sorted(names))
-
 
 def check_the_reader_refuses_what_it_cannot_prove():
     cases = {
@@ -99,19 +89,16 @@ def check_the_reader_refuses_what_it_cannot_prove():
         assert g.edges == (), (sql, g.edges)
         assert any(r.what == expected for r in g.refusals), (sql, [r.what for r in g.refusals])
 
-
 def check_an_unqualified_column_with_two_sources_is_refused_not_guessed():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT city AS c FROM raw.patient p JOIN raw.claim k ON 1=1")
     assert g.edges == ()
     assert [r.what for r in g.refusals] == ["unqualified column"]
 
-
 def check_an_unqualified_column_with_one_source_resolves():
     g = lineage.read_insert_select("INSERT INTO a.b SELECT city AS c FROM raw.patient")
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert g.edges[0].source.address == "raw.patient.city"
-
 
 def check_an_arity_mismatch_falls_back_to_the_alias_and_says_so():
     g = lineage.read_insert_select(
@@ -119,19 +106,16 @@ def check_an_arity_mismatch_falls_back_to_the_alias_and_says_so():
     assert any(r.what == "arity mismatch" for r in g.refusals), g.refusals
     assert g.edges[0].target.column == "c"
 
-
 def check_an_explicit_column_list_beats_the_alias():
     g = lineage.read_insert_select(
         "INSERT INTO a.b (renamed) SELECT p.city AS c FROM raw.patient p")
     assert g.edges[0].target.column == "renamed", g.edges[0]
-
 
 def check_a_comment_in_the_statement_does_not_become_a_column():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT p.city AS c -- pick the city\n FROM raw.patient p")
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {e.source.address for e in g.edges} == {"raw.patient.city"}
-
 
 def check_a_join_key_is_not_a_data_flow():
     key = Edge(ColumnRef("raw.patient", "patient_id"),
@@ -143,13 +127,11 @@ def check_a_join_key_is_not_a_data_flow():
     assert g.roots(["raw.encounter.patient_id"]) == ("raw.encounter.patient_id",)
     assert g.sources_of("raw.encounter.patient_id") == ()
 
-
 def check_walking_upstream_survives_a_cycle():
     a = Edge(ColumnRef("s.one", "x"), ColumnRef("s.two", "x"), EdgeKind.COPY)
     b = Edge(ColumnRef("s.two", "x"), ColumnRef("s.one", "x"), EdgeKind.COPY)
     g = Graph(edges=(a, b))
     assert set(g.sources_of("s.one.x")) == {"s.one.x", "s.two.x"}
-
 
 class _Result:
     """A stand in for `classify.Classification` with only what `propagate` reads."""
@@ -158,7 +140,6 @@ class _Result:
         self.address = address
         self.category_key = category
         self.confidence = confidence
-
 
 def check_a_grouped_column_inherits_and_an_aggregated_one_does_not():
     g = Graph(edges=(
@@ -175,7 +156,6 @@ def check_a_grouped_column_inherits_and_an_aggregated_one_does_not():
     assert by["m.t.geo"].upgrade is True
     assert by["m.t.n"].inherited_category == "not_personal"
     assert by["m.t.n"].upgrade is False
-
 
 def check_the_strongest_upstream_wins_when_two_columns_feed_one():
     # Otherwise a personal column is laundered by concatenating a harmless one onto it.
@@ -200,14 +180,12 @@ def check_the_strongest_upstream_wins_when_two_columns_feed_one():
     by2 = {i.address: i for i in lineage.propagate(g2, results)}
     assert by2["m.t.blob"].inherited_category == "email", by2["m.t.blob"]
 
-
 def check_a_root_says_so_rather_than_claiming_it_inherited_nothing():
     g = Graph(edges=())
     out = lineage.propagate(g, [_Result("raw.p.email", "email", 0.9)])
     assert out[0].inherited_category is None
     assert out[0].disagrees is False
     assert "root" in out[0].rule
-
 
 def check_the_nullability_breach_check_finds_the_one_from_2026_09_18():
     # `analytics.encounter_daily.department` was declared NOT NULL over a nullable source
@@ -223,7 +201,6 @@ def check_the_nullability_breach_check_finds_the_one_from_2026_09_18():
     assert breaches[0].source == "raw.encounter.department"
     assert breaches[0].target == MART + ".department"
 
-
 def check_an_aggregate_over_a_nullable_column_is_not_a_breach():
     # `count(*)` is never null whatever it counted, so reporting this would train whoever
     # reads the output to ignore it.
@@ -234,11 +211,9 @@ def check_an_aggregate_over_a_nullable_column_is_not_a_breach():
     nullable = {"raw.encounter.department": True, MART + ".encounters": False}
     assert lineage.nullable_into_not_null(g, nullable) == ()
 
-
 def check_the_live_schema_has_no_nullability_breach_left():
     g = _mart_graph()
     assert lineage.nullable_into_not_null(g, schema.nullable_by_address()) == ()
-
 
 def check_an_unknown_column_is_skipped_rather_than_assumed_nullable():
     g = Graph(edges=(
@@ -246,7 +221,6 @@ def check_an_unknown_column_is_skipped_rather_than_assumed_nullable():
     ))
     assert lineage.nullable_into_not_null(g, {}) == ()
     assert lineage.nullable_into_not_null(g, {"raw.x.a": True}) == ()
-
 
 def check_most_of_this_warehouse_is_out_of_reach_of_lineage():
     # The number that decides how much this layer is worth. If it ever gets close to the
@@ -257,7 +231,6 @@ def check_most_of_this_warehouse_is_out_of_reach_of_lineage():
     assert len(addresses) == 42, len(addresses)
     assert len(roots) == 37, len(roots)
 
-
 def check_lineage_does_not_separate_created_at_from_admitted_at():
     # The classifier cannot separate these two and the expectation was that lineage would.
     # It does not. Both columns are loaded rather than derived, so neither has an upstream.
@@ -267,10 +240,8 @@ def check_lineage_does_not_separate_created_at_from_admitted_at():
     assert "raw.patient.created_at" in roots
     assert "raw.encounter.admitted_at" in roots
 
-
 def check_the_declared_references_are_real():
     assert schema.check_foreign_keys_are_real() is None
-
 
 def check_a_reference_to_a_non_key_column_is_refused():
     import pii.schema as declared
@@ -285,7 +256,6 @@ def check_a_reference_to_a_non_key_column_is_refused():
     finally:
         declared.FOREIGN_KEYS = original
 
-
 def check_a_reference_to_a_column_that_does_not_exist_is_refused():
     import pii.schema as declared
 
@@ -299,14 +269,12 @@ def check_a_reference_to_a_column_that_does_not_exist_is_refused():
     finally:
         declared.FOREIGN_KEYS = original
 
-
 def check_declaring_references_did_not_move_the_pinned_fingerprint():
     # The references are deliberately not a field on `Column`. If that ever changes, this
     # is the check that says the pinned value has to be re-derived and the crawler regraded.
     assert schema.fingerprint() == "1501a19ca3d8", schema.fingerprint()
 
-
-# --- checks written against named mutation survivors -------------------------------
+# checks written against named mutation survivors
 
 def check_every_dataclass_here_is_frozen():
     # Seven of them were mutable with nothing saying otherwise, which a mutation pass found
@@ -319,7 +287,6 @@ def check_every_dataclass_here_is_frozen():
         assert dataclasses.is_dataclass(cls), cls
         assert cls.__dataclass_params__.frozen, cls.__name__
 
-
 def check_a_comma_inside_a_string_literal_does_not_split_a_select_item():
     # `_split_top_level` tracks string state and nothing exercised it. A separator inside a
     # literal would cut one select item into two and shift every target column after it.
@@ -331,13 +298,11 @@ def check_a_comma_inside_a_string_literal_does_not_split_a_select_item():
     assert {e.source.address for e in g.edges} == {
         "raw.patient.city", "raw.patient.postal_code"}
 
-
 def check_a_doubled_quote_inside_a_literal_does_not_end_the_literal():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT concat(p.city, 'it''s, fine') AS c FROM raw.patient p")
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {e.source.address for e in g.edges} == {"raw.patient.city"}
-
 
 def check_a_function_whose_name_ends_in_cast_is_not_a_cast():
     # `_strip_cast_types` searches for the substring and a bare search finds one inside
@@ -348,7 +313,6 @@ def check_a_function_whose_name_ends_in_cast_is_not_a_cast():
     assert {e.source.address for e in g.edges} == {"raw.encounter.department"}
     assert g.edges[0].kind is EdgeKind.TRANSFORM, g.edges[0].kind
 
-
 def check_a_cast_nested_inside_another_expression_is_still_stripped():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT length(CAST(p.postal_code AS VARCHAR)) AS n "
@@ -357,7 +321,6 @@ def check_a_cast_nested_inside_another_expression_is_still_stripped():
     names = {e.source.column for e in g.edges}
     assert names == {"postal_code"}, names
 
-
 def check_two_casts_in_one_expression_are_both_stripped():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT concat(CAST(p.city AS VARCHAR), "
@@ -365,12 +328,10 @@ def check_two_casts_in_one_expression_are_both_stripped():
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {e.source.column for e in g.edges} == {"city", "postal_code"}
 
-
 def check_the_cast_detail_names_the_type_and_nothing_else():
     g = _mart_graph()
     edge = [e for e in g.edges if e.target.column == "day"][0]
     assert edge.detail == "cast to DATE, grouping key", repr(edge.detail)
-
 
 def check_the_aggregate_detail_says_which_function_it_was():
     g = _mart_graph()
@@ -378,7 +339,6 @@ def check_the_aggregate_detail_says_which_function_it_was():
     assert avg_edge.detail == "avg over the group", repr(avg_edge.detail)
     count_edge = [e for e in g.edges if e.target.column == "encounters"][0]
     assert count_edge.detail == "row count over the join grain", repr(count_edge.detail)
-
 
 def check_a_group_by_naming_the_expression_works_like_one_naming_the_position():
     # The mart uses `GROUP BY 1, 2, 3` so the name branch had no fixture at all.
@@ -388,7 +348,6 @@ def check_a_group_by_naming_the_expression_works_like_one_naming_the_position():
     by_target = {e.target.column: e for e in g.edges}
     assert by_target["c"].kind is EdgeKind.GROUPED, by_target["c"]
 
-
 def check_a_scalar_subquery_in_a_select_item_is_refused():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT (SELECT max(x.city) FROM raw.patient x) AS c "
@@ -396,13 +355,11 @@ def check_a_scalar_subquery_in_a_select_item_is_refused():
     assert g.edges == ()
     assert any(r.what == "scalar subquery" for r in g.refusals), g.refusals
 
-
 def check_a_refusal_names_which_select_item_it_was():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT k.claim_id AS a, k.payer_name::VARCHAR AS b FROM raw.claim k")
     shorthand = [r for r in g.refusals if r.what == "shorthand cast"]
     assert shorthand and "item 2" in shorthand[0].detail, [str(r) for r in g.refusals]
-
 
 def check_a_table_with_no_alias_can_be_qualified_by_its_own_name():
     for qualifier in ("raw.patient", "patient"):
@@ -410,7 +367,6 @@ def check_a_table_with_no_alias_can_be_qualified_by_its_own_name():
             "INSERT INTO a.b SELECT {}.city AS c FROM raw.patient".format(qualifier))
         assert g.refusals == (), (qualifier, [str(r) for r in g.refusals])
         assert g.edges[0].source.address == "raw.patient.city", (qualifier, g.edges[0])
-
 
 def check_merging_two_graphs_keeps_the_refusals_of_both():
     one = lineage.read_insert_select("INSERT INTO a.b SELECT * FROM raw.patient")
@@ -420,13 +376,11 @@ def check_merging_two_graphs_keeps_the_refusals_of_both():
     assert len(merged.refusals) == len(one.refusals) + len(two.refusals)
     assert len(merged.refusals) == 1, merged.refusals
 
-
 def check_downstream_lookup_returns_what_the_column_reaches():
     g = _mart_graph()
     reached = {e.target.address for e in g.out_of("raw.patient.postal_code")}
     assert reached == {MART + ".postal_code"}, reached
     assert g.out_of("raw.patient.email") == ()
-
 
 def check_a_personal_upstream_beats_a_more_confident_harmless_one():
     # The laundering case, and the one a mutant walked straight through. Picking the most
@@ -443,7 +397,6 @@ def check_a_personal_upstream_beats_a_more_confident_harmless_one():
     ]
     by = {i.address: i for i in lineage.propagate(g, results)}
     assert by["m.t.blob"].inherited_category == "national_id", by["m.t.blob"]
-
 
 def check_the_most_confident_personal_upstream_is_the_one_that_wins():
     # And it is the confidence that orders them rather than the category name. `email`
@@ -463,7 +416,6 @@ def check_the_most_confident_personal_upstream_is_the_one_that_wins():
     results[1] = _Result("raw.p.b", "national_id", 0.10)
     by = {i.address: i for i in lineage.propagate(g, results)}
     assert by["m.t.blob"].inherited_category == "email", by["m.t.blob"]
-
 
 def check_a_cast_says_what_it_coarsened_the_value_to():
     g = Graph(edges=(
@@ -489,7 +441,6 @@ def check_a_cast_says_what_it_coarsened_the_value_to():
     out2 = {i.address: i for i in lineage.propagate(g2, results2)}["m.t.geo"]
     assert "coarsened" not in out2.rule, out2.rule
 
-
 def check_an_upstream_column_nobody_classified_is_said_so_rather_than_assumed_safe():
     g = Graph(edges=(
         Edge(ColumnRef("raw.p", "unknown"), ColumnRef("m.t", "c"), EdgeKind.COPY),
@@ -497,7 +448,6 @@ def check_an_upstream_column_nobody_classified_is_said_so_rather_than_assumed_sa
     out = lineage.propagate(g, [_Result("m.t.c", "not_personal", 0.0)])[0]
     assert out.inherited_category is None
     assert "not classified" in out.rule, out.rule
-
 
 def check_a_string_literal_at_the_top_of_the_select_list_protects_its_comma():
     # The earlier literal check put the comma inside a function call, where the bracket
@@ -512,14 +462,12 @@ def check_a_string_literal_at_the_top_of_the_select_list_protects_its_comma():
     by_source = {e.source.column: e.target.column for e in g.edges}
     assert by_source == {"city": "c", "postal_code": "z"}, by_source
 
-
 def check_a_doubled_quote_at_the_top_of_the_select_list_does_not_end_the_literal():
     g = lineage.read_insert_select(
         "INSERT INTO a.b SELECT p.city AS c, 'it''s, fine' AS lit FROM raw.patient p",
         ["c", "lit"])
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {e.source.column for e in g.edges} == {"city"}
-
 
 def check_the_star_and_subquery_refusals_name_the_right_select_item():
     # Same gap the shorthand cast refusal had. A refusal whose message points at the wrong
@@ -535,7 +483,6 @@ def check_the_star_and_subquery_refusals_name_the_right_select_item():
     sub = [r for r in g2.refusals if r.what == "scalar subquery"]
     assert sub and "item 3" in sub[0].detail, [str(r) for r in g2.refusals]
 
-
 def check_a_cast_wrapping_another_cast_terminates_and_strips_both():
     # The nested case the forward only scan has to handle. An outer cast is rewritten
     # first and the inner one is then found after the rewritten span rather than by
@@ -545,7 +492,6 @@ def check_a_cast_wrapping_another_cast_terminates_and_strips_both():
         "FROM raw.patient p")
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {e.source.column for e in g.edges} == {"birth_date"}, g.edges
-
 
 def check_an_empty_string_literal_closes_rather_than_swallowing_the_rest():
     # `''` is an empty literal and not the start of an escaped quote. Reading it as an
@@ -557,7 +503,6 @@ def check_an_empty_string_literal_closes_rather_than_swallowing_the_rest():
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {(e.source.column, e.target.column) for e in g.edges} == {("city", "c")}
 
-
 def check_an_escaped_quote_inside_a_literal_keeps_the_item_boundaries():
     # `''''` is a literal holding one apostrophe, which is what a surname like O'Brien
     # needs. Miscounting it by one character flips whether the next comma is inside the
@@ -568,13 +513,11 @@ def check_an_escaped_quote_inside_a_literal_keeps_the_item_boundaries():
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {(e.source.column, e.target.column) for e in g.edges} == {("city", "c")}
 
-
 def check_a_degenerate_literal_does_not_raise_out_of_the_splitter():
     # The scanner reads one character ahead and the lookahead has to be bounded. Three of
     # these inputs made an unbounded version walk off the end of the string.
     for text in ("''", "'", "'''", "a,''", "''," , "'',''"):
         lineage._split_top_level(text)
-
 
 def check_an_aliased_table_cannot_also_be_named_by_its_table_name():
     # SQL's own rule. Once a source carries an alias the table name stops resolving, and
@@ -583,7 +526,6 @@ def check_an_aliased_table_cannot_also_be_named_by_its_table_name():
         "INSERT INTO a.b SELECT patient.city AS c FROM raw.patient p")
     assert g.edges == ()
     assert [r.what for r in g.refusals] == ["unknown qualifier"], g.refusals
-
 
 def check_a_cast_at_the_start_of_an_arithmetic_expression_is_still_a_cast():
     # The guard that stops `forecast(` being read as a cast looks at the character before
@@ -594,7 +536,6 @@ def check_a_cast_at_the_start_of_an_arithmetic_expression_is_still_a_cast():
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {e.source.column for e in g.edges} == {"birth_date"}, g.edges
 
-
 def check_a_real_cast_inside_a_call_whose_name_ends_in_cast_is_still_found():
     # Two matches in one expression. The first is skipped by the guard and the scan has to
     # resume close enough behind to still see the second.
@@ -603,7 +544,6 @@ def check_a_real_cast_inside_a_call_whose_name_ends_in_cast_is_still_found():
         "FROM raw.encounter e")
     assert g.refusals == (), [str(r) for r in g.refusals]
     assert {e.source.column for e in g.edges} == {"admitted_at"}, g.edges
-
 
 def check_an_unbalanced_bracket_is_left_alone_rather_than_crashing():
     # A truncated statement should come back as whatever the reader could make of it. The
@@ -621,9 +561,7 @@ def check_an_unbalanced_bracket_is_left_alone_rather_than_crashing():
     assert "p.city" in stripped, stripped
     assert lineage._names_in("length(CAST(p.city AS VARCHAR)") == ["p.city"]
 
-
 # Upstream tables, which is what the classifier asks the graph for.
-
 
 def _copy_and_count_graph() -> Graph:
     """A grouping key copied out of a table and a count taken over it, side by side."""
@@ -636,10 +574,8 @@ def _copy_and_count_graph() -> Graph:
              ColumnRef("raw.encounter", "patient_id"), EdgeKind.JOIN_KEY),
     ))
 
-
 def check_upstream_tables_follows_a_value_preserving_edge():
     assert _copy_and_count_graph().upstream_tables("mart.daily") == ("raw.patient",)
-
 
 def check_upstream_tables_ignores_an_aggregate_by_default():
     # `raw.encounter` feeds the count and carries none of its values into it, so a table
@@ -655,7 +591,6 @@ def check_upstream_tables_ignores_an_aggregate_by_default():
     assert named.upstream_tables("mart.daily", value_preserving_only=False) == (
         "raw.encounter",)
 
-
 def check_upstream_tables_can_be_asked_to_include_an_aggregate():
     got = _copy_and_count_graph().upstream_tables(
         "mart.daily", value_preserving_only=False)
@@ -664,10 +599,8 @@ def check_upstream_tables_can_be_asked_to_include_an_aggregate():
     # column in it, and letting it through makes every row count look like a carried value.
     assert "raw.encounter" not in got
 
-
 def check_upstream_tables_ignores_a_join_key():
     assert _copy_and_count_graph().upstream_tables("raw.encounter") == ()
-
 
 def check_upstream_tables_walks_more_than_one_hop():
     g = Graph(edges=(
@@ -676,12 +609,10 @@ def check_upstream_tables_walks_more_than_one_hop():
     ))
     assert set(g.upstream_tables("c.t")) == {"a.t", "b.t"}
 
-
 def check_upstream_tables_never_reports_the_table_itself():
     g = Graph(edges=(
         Edge(ColumnRef("a.t", "x"), ColumnRef("a.t", "y"), EdgeKind.COPY),))
     assert g.upstream_tables("a.t") == ()
-
 
 def check_upstream_tables_survives_a_cycle():
     g = Graph(edges=(
@@ -690,17 +621,14 @@ def check_upstream_tables_survives_a_cycle():
     ))
     assert g.upstream_tables("a.t") == ("b.t",)
 
-
 def check_upstream_tables_of_an_unknown_table_is_empty():
     assert _copy_and_count_graph().upstream_tables("nothing.here") == ()
-
 
 def check_the_upstream_map_covers_every_table_it_is_given():
     g = _copy_and_count_graph()
     m = g.upstream_table_map(["mart.daily", "raw.patient"])
     assert sorted(m) == ["mart.daily", "raw.patient"]
     assert m["raw.patient"] == ()
-
 
 def check_the_upstream_map_carries_the_value_preserving_setting_through():
     named = Graph(edges=(
@@ -710,7 +638,6 @@ def check_the_upstream_map_carries_the_value_preserving_setting_through():
     assert named.upstream_table_map(
         ["mart.daily"], value_preserving_only=False) == {
             "mart.daily": ("raw.encounter",)}
-
 
 def check_the_real_mart_traces_back_to_both_source_tables():
     # The mart's grouping keys come out of `raw.encounter` and `raw.patient`, so both are

@@ -34,7 +34,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-
 class EdgeKind(Enum):
     """What the derivation did to the value, which is what decides inheritance."""
 
@@ -45,13 +44,11 @@ class EdgeKind(Enum):
     TRANSFORM = "transform"
     JOIN_KEY = "join_key"
 
-
 # Kinds where the value that lands downstream is the same value that was upstream. A
 # grouping key belongs here and that is the point. Collapsing duplicate rows does not
 # change what is in the column, so a postal code that was a postal code before a GROUP BY
 # is still a postal code after it.
 VALUE_PRESERVING = (EdgeKind.COPY, EdgeKind.CAST, EdgeKind.GROUPED)
-
 
 @dataclass(frozen=True)
 class ColumnRef:
@@ -65,7 +62,6 @@ class ColumnRef:
     def __str__(self) -> str:
         return self.address
 
-
 @dataclass(frozen=True)
 class Edge:
     source: ColumnRef
@@ -76,7 +72,6 @@ class Edge:
     def __str__(self) -> str:
         return "{:<38} -> {:<38} {:<10} {}".format(
             self.source.address, self.target.address, self.kind.value, self.detail)
-
 
 @dataclass(frozen=True)
 class Refusal:
@@ -92,7 +87,6 @@ class Refusal:
 
     def __str__(self) -> str:
         return "{:<28} {}".format(self.what, self.detail)
-
 
 @dataclass(frozen=True)
 class Graph:
@@ -191,9 +185,6 @@ class Graph:
         """`upstream_tables` for each of these, which is the shape the classifier wants."""
         return {t: self.upstream_tables(t, value_preserving_only) for t in tables}
 
-
-# --- the SQL reader ---------------------------------------------------------------
-
 _AGGREGATES = ("count", "sum", "avg", "min", "max", "median", "stddev",
                "string_agg", "list", "any_value", "arg_max", "arg_min")
 
@@ -230,11 +221,9 @@ _UNSUPPORTED = (
     ("lateral", "a lateral join changes what a table alias means partway through"),
 )
 
-
 def _strip_comments(sql: str) -> str:
     sql = re.sub(r"--[^\n]*", " ", sql)
     return re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
-
 
 def _split_top_level(text: str, sep: str = ",") -> List[str]:
     """Split on a separator that is not inside brackets or a string literal."""
@@ -269,7 +258,6 @@ def _split_top_level(text: str, sep: str = ",") -> List[str]:
         i += 1
     out.append("".join(current))
     return [s.strip() for s in out if s.strip()]
-
 
 def _strip_cast_types(expression: str) -> str:
     """Rewrite `CAST(x AS DATE)` to `(x)` so the type name stops looking like a column.
@@ -314,7 +302,6 @@ def _strip_cast_types(expression: str) -> str:
         at = lowered.find("cast(", at)
     return expression
 
-
 def _names_in(expression: str) -> List[str]:
     """Every identifier in an expression that could be a column reference."""
     expression = _strip_cast_types(expression)
@@ -334,14 +321,12 @@ def _names_in(expression: str) -> List[str]:
         found.append(name)
     return found
 
-
 @dataclass(frozen=True)
 class _Source:
     """One table in the FROM clause, with whatever it was called locally."""
 
     fqn: str
     alias: str
-
 
 def _parse_sources(from_clause: str) -> Tuple[Tuple[_Source, ...], Tuple[Refusal, ...]]:
     """Table references and their aliases, out of a FROM with plain joins in it."""
@@ -369,7 +354,6 @@ def _parse_sources(from_clause: str) -> Tuple[Tuple[_Source, ...], Tuple[Refusal
         sources.append(_Source(fqn=fqn, alias=alias))
     return tuple(sources), tuple(refusals)
 
-
 def _resolve(name: str, sources: Sequence[_Source]) -> Tuple[Optional[ColumnRef], Optional[Refusal]]:
     """Turn `e.department` or a bare `department` into a real column address."""
     if "." in name:
@@ -392,7 +376,6 @@ def _resolve(name: str, sources: Sequence[_Source]) -> Tuple[Optional[ColumnRef]
                          "{} could come from any of {}".format(
                              name, ", ".join(s.fqn for s in sources)))
 
-
 def _kind_of(expression: str) -> Tuple[EdgeKind, str]:
     body = expression.strip()
     if _CAST_CALL.match(body):
@@ -406,7 +389,6 @@ def _kind_of(expression: str) -> Tuple[EdgeKind, str]:
     if re.search(r"\b(" + "|".join(_AGGREGATES) + r")\s*\(", body, re.IGNORECASE):
         return EdgeKind.AGGREGATE, "aggregate inside a larger expression"
     return EdgeKind.TRANSFORM, "expression"
-
 
 def read_insert_select(sql: str, target_columns: Optional[Sequence[str]] = None) -> Graph:
     """Recover column level edges from one `INSERT INTO ... SELECT` statement.
@@ -533,7 +515,6 @@ def read_insert_select(sql: str, target_columns: Optional[Sequence[str]] = None)
 
     return Graph(edges=tuple(edges), refusals=tuple(refusals))
 
-
 def foreign_key_edges(con, engine_schemas: Sequence[str]) -> Tuple[Edge, ...]:
     """Declared referential edges, out of the catalog rather than out of a name.
 
@@ -568,8 +549,7 @@ def foreign_key_edges(con, engine_schemas: Sequence[str]) -> Tuple[Edge, ...]:
             ))
     return tuple(out)
 
-
-# --- what a classification does when it travels ------------------------------------
+# what a classification does when it travels
 
 # A cast that lands on one of these types cannot carry a finer unit than the type holds.
 # Only the direction matters here, so the map is deliberately small and everything not in
@@ -578,7 +558,6 @@ _COARSENS_TO = {
     "DATE": "day",
     "TIMESTAMP": "second",
 }
-
 
 @dataclass(frozen=True)
 class Inherited:
@@ -602,7 +581,6 @@ class Inherited:
     def upgrade(self) -> bool:
         """Upstream says personal and the column on its own said nothing."""
         return self.disagrees and self.direct_category == "not_personal"
-
 
 def propagate(graph: Graph, classifications: Sequence) -> Tuple[Inherited, ...]:
     """Push each column's category down its outgoing value preserving edges.
@@ -666,7 +644,6 @@ def propagate(graph: Graph, classifications: Sequence) -> Tuple[Inherited, ...]:
                              tuple(sorted({e.source.address for e in preserving})), rule))
     return tuple(out)
 
-
 @dataclass(frozen=True)
 class NullabilityBreach:
     """A NOT NULL column fed by a column that is allowed to be empty."""
@@ -678,7 +655,6 @@ class NullabilityBreach:
     def __str__(self) -> str:
         return "{:<38} nullable -> {:<38} NOT NULL  via {}".format(
             self.source, self.target, self.kind.value)
-
 
 def nullable_into_not_null(graph: Graph,
                            nullable_by_address: Dict[str, bool]) -> Tuple[NullabilityBreach, ...]:

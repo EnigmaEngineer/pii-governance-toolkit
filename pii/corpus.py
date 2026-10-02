@@ -89,7 +89,6 @@ NOTE_TEMPLATES = (
 )
 SYMPTOMS = ("chest tightness", "shortness of breath", "lower back pain", "palpitations")
 
-
 @dataclass(frozen=True)
 class Corpus:
     patients: List[dict]
@@ -116,7 +115,6 @@ class Corpus:
             "raw.device_reading": len(self.readings),
         }
 
-
 def _postal_weights(n: int) -> Tuple[float, ...]:
     """A decaying weight per postal code.
 
@@ -127,9 +125,7 @@ def _postal_weights(n: int) -> Tuple[float, ...]:
     total = sum(raw)
     return tuple(r / total for r in raw)
 
-
 POSTAL_WEIGHTS = _postal_weights(len(POSTAL_CODES))
-
 
 def _draw_birth_date(rnd, today: dt.date) -> dt.date:
     """An age in a plausible band, then a day inside that year.
@@ -142,7 +138,6 @@ def _draw_birth_date(rnd, today: dt.date) -> dt.date:
     year = today.year - age
     day_of_year = rnd.randint(1, 365)
     return dt.date(year, 1, 1) + dt.timedelta(days=day_of_year - 1)
-
 
 def nullable_columns() -> Tuple[Tuple[str, str], ...]:
     """Every generated column the schema says may hold a null, as (table fqn, column).
@@ -158,7 +153,6 @@ def nullable_columns() -> Tuple[Tuple[str, str], ...]:
             if c.nullable:
                 out.append((fqn, c.name))
     return tuple(out)
-
 
 def _apply_nulls(corpus: "Corpus", seed: int, rate: float) -> None:
     """Null out a share of each nullable column, in place.
@@ -180,7 +174,6 @@ def _apply_nulls(corpus: "Corpus", seed: int, rate: float) -> None:
             if rnd.random() < rate:
                 r[column] = None
 
-
 def null_counts(c: "Corpus") -> Dict[str, int]:
     """Observed nulls per column, counted off the rows.
 
@@ -193,7 +186,6 @@ def null_counts(c: "Corpus") -> Dict[str, int]:
         rows = getattr(c, ROWS_FOR[fqn])
         out["{}.{}".format(fqn, column)] = sum(1 for r in rows if r[column] is None)
     return out
-
 
 def generate(n_patients: int = 1000, seed: int = 20260917,
              today: dt.date = dt.date(2026, 9, 17),
@@ -297,7 +289,6 @@ def generate(n_patients: int = 1000, seed: int = 20260917,
     _apply_nulls(corpus, seed, null_rate)
     return corpus
 
-
 def summarise(c: Corpus) -> Dict[str, object]:
     """Distributional facts about the corpus, computed rather than asserted.
 
@@ -340,8 +331,6 @@ def summarise(c: Corpus) -> Dict[str, object]:
         "nullable_columns": len(nullable_columns()),
     }
 
-
-# --- the access substrate ------------------------------------------------------------
 #
 # Grants and a query log. Not warehouse rows, and generated here anyway, because the rule
 # this repo keeps is that a module does not manufacture the data it then measures.
@@ -389,7 +378,6 @@ QUERIED_COLUMNS: Dict[str, Tuple[str, ...]] = {
 }
 
 STAR_RATE = 0.22
-
 
 def generate_access(seed: int = 20260917, n_queries: int = 400,
                     start: dt.date = dt.date(2026, 6, 1),
@@ -443,7 +431,6 @@ def generate_access(seed: int = 20260917, n_queries: int = 400,
             tables=(table,),
             columns=tuple("{}.{}".format(table, c) for c in sorted(picked))))
     return grants, members, events
-
 
 def summarise_access(grants, members, events) -> Dict[str, object]:
     """Facts about the log, computed. Same reason `summarise` exists for the rows."""
