@@ -1,0 +1,440 @@
+{
+  "arm_sets": [
+    {
+      "arms": [
+        "name",
+        "value",
+        "structure"
+      ],
+      "bands_moved": 0,
+      "false_alarms": 2,
+      "found": 20,
+      "in_scope": 20,
+      "label": "all three",
+      "masked": 12,
+      "moves": []
+    },
+    {
+      "arms": [
+        "name"
+      ],
+      "bands_moved": 3,
+      "false_alarms": 2,
+      "found": 19,
+      "in_scope": 20,
+      "label": "name only",
+      "masked": 13,
+      "moves": [
+        {
+          "address": "analytics.encounter_daily.day",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.attending_npi",
+          "from_band": "review",
+          "to_band": "accept"
+        },
+        {
+          "address": "raw.encounter.clinical_note",
+          "from_band": "accept",
+          "to_band": "review"
+        }
+      ]
+    },
+    {
+      "arms": [
+        "value"
+      ],
+      "bands_moved": 21,
+      "false_alarms": 0,
+      "found": 5,
+      "in_scope": 20,
+      "label": "value only",
+      "masked": 3,
+      "moves": [
+        {
+          "address": "analytics.encounter_daily.day",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "analytics.encounter_daily.postal_code",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.member_number",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.payer_name",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.submitted_on",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.device_reading.device_serial",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.device_reading.taken_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.admitted_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.clinical_note",
+          "from_band": "accept",
+          "to_band": "review"
+        },
+        {
+          "address": "raw.encounter.discharged_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.primary_diagnosis",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.birth_date",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.city",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.created_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.first_name",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.last_name",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.mrn",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.phone",
+          "from_band": "accept",
+          "to_band": "review"
+        },
+        {
+          "address": "raw.patient.postal_code",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.sex",
+          "from_band": "accept",
+          "to_band": "review"
+        },
+        {
+          "address": "raw.patient.street_address",
+          "from_band": "accept",
+          "to_band": "ignore"
+        }
+      ]
+    },
+    {
+      "arms": [
+        "structure"
+      ],
+      "bands_moved": 25,
+      "false_alarms": 0,
+      "found": 0,
+      "in_scope": 20,
+      "label": "structure only",
+      "masked": 0,
+      "moves": [
+        {
+          "address": "analytics.encounter_daily.day",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "analytics.encounter_daily.postal_code",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.member_number",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.payer_name",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.submitted_on",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.device_reading.device_serial",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.device_reading.source_ip",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.device_reading.taken_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.admitted_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.attending_npi",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.clinical_note",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.discharged_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.primary_diagnosis",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.birth_date",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.city",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.created_at",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.email",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.first_name",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.last_name",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.mrn",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.phone",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.postal_code",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.sex",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.ssn",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.street_address",
+          "from_band": "accept",
+          "to_band": "ignore"
+        }
+      ]
+    },
+    {
+      "arms": [
+        "value",
+        "structure"
+      ],
+      "bands_moved": 16,
+      "false_alarms": 1,
+      "found": 10,
+      "in_scope": 20,
+      "label": "without name",
+      "masked": 3,
+      "moves": [
+        {
+          "address": "analytics.encounter_daily.postal_code",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.member_number",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.payer_name",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.claim.submitted_on",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.device_reading.device_serial",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.encounter.clinical_note",
+          "from_band": "accept",
+          "to_band": "review"
+        },
+        {
+          "address": "raw.encounter.primary_diagnosis",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.birth_date",
+          "from_band": "accept",
+          "to_band": "review"
+        },
+        {
+          "address": "raw.patient.city",
+          "from_band": "review",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.first_name",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.last_name",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.mrn",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.phone",
+          "from_band": "accept",
+          "to_band": "review"
+        },
+        {
+          "address": "raw.patient.postal_code",
+          "from_band": "accept",
+          "to_band": "ignore"
+        },
+        {
+          "address": "raw.patient.sex",
+          "from_band": "accept",
+          "to_band": "review"
+        },
+        {
+          "address": "raw.patient.street_address",
+          "from_band": "accept",
+          "to_band": "ignore"
+        }
+      ]
+    },
+    {
+      "arms": [
+        "name",
+        "structure"
+      ],
+      "bands_moved": 2,
+      "false_alarms": 2,
+      "found": 20,
+      "in_scope": 20,
+      "label": "without value",
+      "masked": 13,
+      "moves": [
+        {
+          "address": "raw.encounter.attending_npi",
+          "from_band": "review",
+          "to_band": "accept"
+        },
+        {
+          "address": "raw.encounter.clinical_note",
+          "from_band": "accept",
+          "to_band": "review"
+        }
+      ]
+    },
+    {
+      "arms": [
+        "name",
+        "value"
+      ],
+      "bands_moved": 1,
+      "false_alarms": 2,
+      "found": 19,
+      "in_scope": 20,
+      "label": "without structure",
+      "masked": 12,
+      "moves": [
+        {
+          "address": "analytics.encounter_daily.day",
+          "from_band": "review",
+          "to_band": "ignore"
+        }
+      ]
+    }
+  ],
+  "decides_nothing": []
+}

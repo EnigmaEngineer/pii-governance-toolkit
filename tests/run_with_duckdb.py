@@ -18,6 +18,20 @@ from tests.run_all import MODULES  # noqa: E402
 from tests.runner import run_checks  # noqa: E402
 
 
+# The checks that need the driver. A module level name rather than a literal inside
+# `main`, so `tests/test_readme.py` can count what this runner will run instead of
+# carrying a second copy of the list.
+EXTRA_MODULES = [
+    "tests.test_warehouse",
+    "tests.test_crawl",
+    "tests.test_profile",
+    "tests.test_mask_applied",
+    "tests.test_compliance_document",
+    "tests.test_ablation_warehouse",
+    "tests.test_readme",
+]
+
+
 def main() -> int:
     try:
         import duckdb  # noqa: F401
@@ -25,10 +39,7 @@ def main() -> int:
         print("FAIL: this runner needs duckdb and it is not importable: {}".format(exc))
         print("      pip install -r requirements.txt")
         return 2
-    return run_checks(
-        MODULES + ["tests.test_warehouse", "tests.test_crawl", "tests.test_profile",
-                  "tests.test_mask_applied", "tests.test_compliance_document"],
-        verbose="-v" in sys.argv)
+    return run_checks(MODULES + EXTRA_MODULES, verbose="-v" in sys.argv)
 
 
 if __name__ == "__main__":
