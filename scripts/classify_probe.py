@@ -44,13 +44,26 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pii.classify as classify  # noqa: E402
-from pii import classify, coverage, crawl, lineage, naive, profile, safeharbor  # noqa: E402
+from pii import (ablation, classify, coverage, crawl, lineage, naive, profile,  # noqa: E402
+                 safeharbor)
 from pii.corpus import generate  # noqa: E402
 from pii import schema  # noqa: E402
 from pii.schema import PLANTED, TABLES, planted_index  # noqa: E402
 from pii.taxonomy import TAXONOMY  # noqa: E402
 
 RULE = "-" * 96
+
+
+def write_manifest(report, path: str) -> None:
+    """Write the ablation to disk so a check can re-derive it and fail on drift.
+
+    Sorted keys and a trailing newline, because the point of committing this is the diff.
+    """
+    import json
+    with open(path, "w") as fh:
+        json.dump(report.manifest(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    print("\nablation manifest written to {}".format(path))
 
 
 def connect(path: str, read_only: bool = True):
@@ -216,45 +229,41 @@ def section_threshold_sweep(results, key_for):
           " is {:.2f}".format(classify.ACCEPT_AT, first_clean))
 
 
-def section_ablation(profiles, key_for):
+def ablation_report(profiles, key_for):
+    """The ablation, through `pii.ablation`, on the graph this run read."""
+    return ablation.ablate(
+        profiles,
+        upstream_tables=UPSTREAM,
+        scope=scope_keys(),
+        planted_key_for=key_for,
+    )
+
+
+def section_ablation(report):
     print("\nARM ABLATION")
     print(RULE)
-    real = (classify.name_signals, classify.value_signals, classify.structure_signals)
-    base = {r.address: r.band for r in classify_all(profiles)}
-    scope = scope_keys()
-
-    def run(name=True, value=True, structure=True):
-        classify.name_signals = real[0] if name else (lambda n: ())
-        classify.value_signals = real[1] if value else (lambda p: ())
-        classify.structure_signals = real[2] if structure else (lambda p: ())
-        try:
-            return classify_all(profiles)
-        finally:
-            (classify.name_signals, classify.value_signals,
-             classify.structure_signals) = real
-
-    print("{:<22} {:>9} {:>7} {:>8} {:>13}".format(
-        "arms", "found", "masked", "wrong", "bands moved"))
-    arms = (
-        ("all three", {}),
-        ("name only", dict(value=False, structure=False)),
-        ("value only", dict(name=False, structure=False)),
-        ("structure only", dict(name=False, value=False)),
-        ("without name", dict(name=False)),
-        ("without value", dict(value=False)),
-        ("without structure", dict(structure=False)),
-    )
-    for label, kwargs in arms:
-        res = run(**kwargs)
-        ins = [r for r in res if key_for(r) in scope]
-        moved = sum(1 for r in res if r.band is not base[r.address])
-        print("{:<22} {:>9} {:>7} {:>8} {:>13}".format(
-            label,
-            "{}/{}".format(sum(1 for r in ins if r.flagged), len(ins)),
-            sum(1 for r in ins if r.auto_masked),
-            sum(1 for r in res if r.flagged and key_for(r) == "not_personal"),
-            moved))
+    print(report.table())
     print("\na band that never moves is a decision the arm did not take part in")
+
+    # The rows above are a count and the count was the whole report until 2026-10-09. It
+    # read as two arms deciding nothing, and the row for `without structure` said 1 the
+    # whole time. One band is one column, and naming it is the difference between a
+    # footnote and a finding.
+    for label in ("without name", "without value", "without structure"):
+        reading = report.by_label(label)
+        if not reading.moves:
+            print("\n{}: no band moves, so nothing decided on this arm".format(label))
+            continue
+        print("\n{}: {} band(s) move".format(label, reading.bands_moved))
+        for move in reading.moves:
+            print("    {}".format(move.describe()))
+
+    nothing = report.decides_nothing()
+    if nothing:
+        print("\ndeciding nothing on this warehouse: {}".format(
+            ", ".join(a.value for a in nothing)))
+    else:
+        print("\nevery arm moves at least one band, so none of them is free to delete")
 
 
 def obfuscated_db(source: str, target: str) -> dict:
@@ -449,6 +458,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=20260917)
     ap.add_argument("--skip-nulls", action="store_true",
                     help="skip the null sweep, which rebuilds the corpus five times")
+    ap.add_argument("--ablation-manifest", default=None,
+                    help="write the ablation to this path as JSON, for the drift check")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -474,7 +485,10 @@ def main() -> int:
 
     section_bands(results, key_for)
     section_threshold_sweep(results, key_for)
-    section_ablation(profiles, key_for)
+    report = ablation_report(profiles, key_for)
+    section_ablation(report)
+    if args.ablation_manifest:
+        write_manifest(report, args.ablation_manifest)
     section_context(profiles, key_for)
     section_reach(results, key_for)
     section_obfuscated(args, key_for)
