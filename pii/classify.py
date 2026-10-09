@@ -67,6 +67,14 @@ class Arm(Enum):
     STRUCTURE = "structure"
 
 
+# The default arm set, and the only one the shipped tool runs. It exists as a value rather
+# than as three `if` statements because `pii/ablation.py` has to be able to ask for a
+# subset, and the alternative was rebinding `name_signals` on this module from a script.
+# That worked and it is the wrong shape: a measurement that reaches into another module's
+# globals cannot be checked, and anything else running at the same time sees the stub.
+ALL_ARMS: Tuple[Arm, ...] = (Arm.NAME, Arm.VALUE, Arm.STRUCTURE)
+
+
 @dataclass(frozen=True)
 class Signal:
     """One piece of evidence pointing at one category.
@@ -434,14 +442,29 @@ class Classification:
         return "\n".join(lines)
 
 
-def classify_column(profile: ColumnProfile) -> Classification:
+def column_signals(profile: ColumnProfile,
+                   arms: Sequence[Arm] = ALL_ARMS) -> Tuple[Signal, ...]:
+    """Every signal the named arms produce for one column.
+
+    The arm set is a parameter so that removing an arm is an argument rather than an edit.
+    An arm not named here contributes nothing, which is a stronger statement than filtering
+    its signals out afterwards: the second pass in `classify_table` reads the signals it is
+    given, so a late filter would leave a deleted arm still steering the table verdict.
+    """
+    out: Tuple[Signal, ...] = ()
+    if Arm.NAME in arms:
+        out += name_signals(profile.column)
+    if Arm.VALUE in arms:
+        out += value_signals(profile)
+    if Arm.STRUCTURE in arms:
+        out += structure_signals(profile)
+    return out
+
+
+def classify_column(profile: ColumnProfile,
+                    arms: Sequence[Arm] = ALL_ARMS) -> Classification:
     """One column, on its own evidence, with no knowledge of its neighbours."""
-    signals = (
-        name_signals(profile.column)
-        + value_signals(profile)
-        + structure_signals(profile)
-    )
-    return _decide(profile, signals)
+    return _decide(profile, column_signals(profile, arms))
 
 
 def _decide(profile: ColumnProfile, signals: Tuple[Signal, ...]) -> Classification:
@@ -509,7 +532,8 @@ def table_is_person_linked(results: Sequence[Classification],
 
 def classify_table(profiles: Sequence[ColumnProfile],
                    evidence_bar: float = REVIEW_AT,
-                   person_linked: Optional[bool] = None) -> Tuple[Classification, ...]:
+                   person_linked: Optional[bool] = None,
+                   arms: Sequence[Arm] = ALL_ARMS) -> Tuple[Classification, ...]:
     """Two passes. Columns alone, then the temporal ones again with the table in view.
 
     The second pass only ever removes evidence. A temporal signal in a table that names
@@ -529,7 +553,7 @@ def classify_table(profiles: Sequence[ColumnProfile],
         raise ValueError(
             "classify_table takes one table at a time, got {}".format(sorted(tables)))
 
-    first = tuple(classify_column(p) for p in profiles)
+    first = tuple(classify_column(p, arms) for p in profiles)
     linked = (table_is_person_linked(first, evidence_bar)
               if person_linked is None else person_linked)
     if linked:
@@ -550,6 +574,7 @@ def classify_warehouse(
     profiles: Sequence[ColumnProfile],
     evidence_bar: float = REVIEW_AT,
     upstream_tables: Optional[Dict[str, Sequence[str]]] = None,
+    arms: Sequence[Arm] = ALL_ARMS,
 ) -> Tuple[Classification, ...]:
     """Every column, grouped by table so the second pass has something to read.
 
@@ -581,7 +606,7 @@ def classify_warehouse(
 
     first: Dict[str, Tuple[Classification, ...]] = {}
     for table in sorted(grouped):
-        first[table] = classify_table(grouped[table], evidence_bar)
+        first[table] = classify_table(grouped[table], evidence_bar, arms=arms)
 
     if upstream_tables is None:
         return tuple(r for table in sorted(first) for r in first[table])
@@ -594,7 +619,8 @@ def classify_warehouse(
             continue
         sources = upstream_tables.get(table, ())
         if any(linked.get(s, False) for s in sources):
-            out.extend(classify_table(grouped[table], evidence_bar, person_linked=True))
+            out.extend(classify_table(grouped[table], evidence_bar,
+                                      person_linked=True, arms=arms))
         else:
             out.extend(first[table])
     return tuple(out)
