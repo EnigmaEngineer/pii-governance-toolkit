@@ -269,6 +269,16 @@ CATEGORIES: Tuple[Category, ...] = (
     _c("device_id", "Device serial number", Identifiability.DIRECT, [Regime.HIPAA]),
     _c("web_url", "Personal URL", Identifiability.DIRECT, [Regime.HIPAA]),
     _c("ip_address", "IP address", Identifiability.DIRECT, [Regime.HIPAA]),
+    # The only entry here that names what the classifier does not know rather than what it
+    # found. A fixed shape high cardinality code with no rule behind it is not nothing and
+    # it is not a national identifier either, and the taxonomy had no way to say so. It
+    # carries no regime because which rulebook claims it depends on what it turns out to
+    # be, and a set with HIPAA in it would be a guess written in the same field a measured
+    # answer goes.
+    _c("unknown_identifier", "Unrecognised structured identifier", Identifiability.DIRECT,
+       note="Only the sampling arm returns this. Direct because the conservative "
+            "direction for a governance tool is to treat an unnamed code in a table "
+            "about people as an identifier until somebody looks."),
     _c("biometric", "Biometric identifier", Identifiability.DIRECT,
        [Regime.HIPAA, Regime.GDPR_SPECIAL]),
     _c("face_photo", "Full face photograph", Identifiability.DIRECT,

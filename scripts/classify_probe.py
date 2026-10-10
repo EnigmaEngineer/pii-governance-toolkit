@@ -88,12 +88,11 @@ def classify_all(profiles, **kw):
 
 
 def upstream_for(con, profiles):
-    cols = [c.name for c in
-            schema.tables_by_fqn()["analytics.encounter_daily"].columns]
-    derived = lineage.read_insert_select(
-        schema.DERIVED_SQL["analytics.encounter_daily"], cols)
-    keys = lineage.Graph(edges=lineage.foreign_key_edges(con, crawl.ENGINE_SCHEMAS))
-    graph = derived.merge(keys)
+    """The table level map this probe's second round reads. The graph comes from one place.
+
+    Kept as a function rather than inlined because two check modules import it by name.
+    """
+    graph = lineage.warehouse_graph(con)
     return graph.upstream_table_map(sorted({p.table for p in profiles}))
 
 
@@ -308,17 +307,18 @@ def section_reach(results, key_for):
         for s in r.signals:
             fired.add(s.category_key)
 
-    print("{:<24} {:>9} {:>10} {:>11} {:>8}".format(
-        "category", "a column", "name rule", "value rule", "fired"))
+    print("{:<24} {:>9} {:>10} {:>11} {:>12} {:>8}".format(
+        "category", "a column", "name rule", "value rule", "sample rule", "fired"))
     for key in sorted(coverage_map):
         if key == "not_personal":
             continue
-        by_name, by_value = coverage_map[key]
-        print("{:<24} {:>9} {:>10} {:>11} {:>8}".format(
+        cover = coverage_map[key]
+        print("{:<24} {:>9} {:>10} {:>11} {:>12} {:>8}".format(
             key,
             "yes" if key in planted_keys else "no",
-            "yes" if by_name else "no",
-            "yes" if by_value else "no",
+            "yes" if cover.by_name else "no",
+            "yes" if cover.by_value else "no",
+            "yes" if cover.by_sample else "no",
             "yes" if key in fired else "no"))
 
     undetectable = classify.undetectable_categories()
@@ -328,6 +328,8 @@ def section_reach(results, key_for):
         len(unreached), len(TAXONOMY)))
     print("{} of those also have no rule in any arm, so nothing can return them".format(
         len(declared_only)))
+    print("the sample rule column is the opt-in arm. A yes there means reachable and not")
+    print("reachable by the arm set this run used. See scripts/sample_probe.py.")
     rule_but_no_column = sorted(set(unreached) - set(undetectable))
     print("{} has a rule and no column, which is the one worth a fixture: {}".format(
         len(rule_but_no_column), ", ".join(rule_but_no_column) or "none"))

@@ -335,20 +335,24 @@ def check_the_temporal_detail_names_the_suffix_that_fired():
         assert repr(suffix) in sig.detail, (name, sig.detail)
 
 
-def check_rule_coverage_reports_both_arms_per_category():
+def check_rule_coverage_reports_every_arm_per_category():
     coverage_map = classify.rule_coverage()
     from pii.taxonomy import TAXONOMY
     assert set(coverage_map) == set(TAXONOMY.keys())
     # email carries a token rule and a predicate. person_name carries only a token rule.
     # not_personal carries neither and is the absence of a finding rather than a gap.
-    assert coverage_map["email"] == (True, True)
-    assert coverage_map["person_name"] == (True, False)
-    assert coverage_map["biometric"] == (False, False)
-    assert coverage_map["not_personal"] == (False, False)
-    # The two arms that produce a category without a table entry, which a map derived
-    # from the tables alone would miss.
-    assert coverage_map["event_date"][0] is True
-    assert coverage_map["free_text_clinical"][1] is True
+    assert coverage_map["email"] == classify.Coverage(True, True, False)
+    assert coverage_map["person_name"] == classify.Coverage(True, False, False)
+    assert coverage_map["biometric"] == classify.Coverage(False, False, False)
+    assert coverage_map["not_personal"] == classify.Coverage(False, False, False)
+    # The arms that produce a category without a table entry, which a map derived from the
+    # tables alone would miss.
+    assert coverage_map["event_date"].by_name is True
+    assert coverage_map["free_text_clinical"].by_value is True
+    # The sampling arm is the only route to an unnamed identifier, and it is also a second
+    # route to a payment card because a checksum is not a digit count.
+    assert coverage_map["unknown_identifier"] == classify.Coverage(False, False, True)
+    assert coverage_map["payment_card"].by_sample is True
 
 
 def check_undetectable_names_only_the_categories_no_arm_can_return():
@@ -357,14 +361,17 @@ def check_undetectable_names_only_the_categories_no_arm_can_return():
     assert undetectable == tuple(sorted(undetectable))
     assert "not_personal" not in undetectable
     for key in undetectable:
-        assert coverage_map[key] == (False, False), key
-    for key, (by_name, by_value) in coverage_map.items():
+        assert not coverage_map[key].reachable, key
+    for key, cover in coverage_map.items():
         if key == "not_personal":
             continue
-        if by_name or by_value:
+        if cover.reachable:
             assert key not in undetectable, key
         else:
             assert key in undetectable, key
+    # Reachable by an arm nobody runs by default is still reachable. The opt-in state is a
+    # different question and `rule_coverage` reports it in its own field.
+    assert "unknown_identifier" not in undetectable
     # `payment_card` has rules and no column in the sample warehouse, which is a
     # different state and the one worth a fixture rather than a note.
     assert "payment_card" not in undetectable
@@ -375,9 +382,61 @@ def check_a_profile_carries_no_value_from_the_column():
     # The invariant the whole design rests on, asserted by walking the dataclass rather
     # than by trusting the docstring that claims it. A field added later that holds a
     # sample fails here.
-    allowed = {"table", "column", "sql_type", "nullable", "is_key",
+    #
+    # `sampled_signals` is the one field that was added and it is split out rather than
+    # folded in. The check this replaces said the profile holds metadata and integers and
+    # nothing else, and that is no longer true when the sampling arm has run. What is still
+    # true is that nothing else may be added, and that is what the two sets below say.
+    numeric = {"table", "column", "sql_type", "nullable", "is_key",
                "rows", "non_null", "distinct", "mean_length", "pattern_hits"}
-    assert {f.name for f in fields(ColumnProfile)} == allowed
+    assert {f.name for f in fields(ColumnProfile)} == numeric | {"sampled_signals"}
+    assert ColumnProfile("t", "c", "VARCHAR", True, False,
+                         10, 10, 10, 4.0).sampled_signals == ()
+
+
+def check_the_sampling_arm_is_not_in_the_default_arm_set():
+    # The whole opt-in claim, as one assertion. A caller who leaves the argument out gets
+    # the three arms that never read a value.
+    assert Arm.SAMPLE not in classify.ALL_ARMS
+    assert classify.ARMS_WITH_SAMPLING == classify.ALL_ARMS + (Arm.SAMPLE,)
+
+
+def check_sampled_evidence_is_ignored_unless_the_arm_is_named():
+    # A profile can carry sampled signals and still be classified by the shipped arm set,
+    # which is what makes the arm opt-in at the point of use rather than at the point of
+    # sampling. The signal below would score 0.6000 on its own and must contribute nothing.
+    planted = Signal(Arm.SAMPLE, "unknown_identifier", 0.6, "a shape")
+    p = ColumnProfile("t", "weird", "VARCHAR", True, False,
+                      100, 100, 100, 9.0).with_sampled_signals((planted,))
+    assert classify.column_signals(p, classify.ALL_ARMS) == ()
+    assert classify.classify_column(p).category_key == "not_personal"
+    assert planted in classify.column_signals(p, classify.ARMS_WITH_SAMPLING)
+
+
+def check_a_profile_refuses_evidence_from_another_arm_in_its_sampled_field():
+    # The field is named for one arm and a name is not a constraint. Without this a value
+    # arm signal could be smuggled past the arm set by putting it here.
+    try:
+        ColumnProfile("t", "c", "VARCHAR", True, False, 1, 1, 1, 1.0,
+                      sampled_signals=(Signal(Arm.NAME, "email", 0.9, "token"),))
+    except ValueError as exc:
+        assert "name signal" in str(exc), str(exc)
+    else:
+        raise AssertionError("a name signal was accepted as sampled evidence")
+
+
+def check_an_unnamed_identifier_beside_a_direct_one_is_not_a_conflict():
+    # The waiver measured on 2026-10-10. Before it, the sampling arm agreeing with the name
+    # arm cost `raw.patient.ssn` 0.2690 of confidence and a band.
+    assert classify.two_readings_of_one_fact("national_id", "unknown_identifier")
+    assert classify.two_readings_of_one_fact("unknown_identifier", "phone")
+    # A quasi identifier on the other side is a real disagreement and keeps its penalty.
+    assert not classify.two_readings_of_one_fact("event_date", "unknown_identifier")
+    assert not classify.two_readings_of_one_fact("sex", "unknown_identifier")
+    # And the waiver must not fire on a category against itself, which would be a reading
+    # of one fact for a different and uninteresting reason.
+    assert not classify.two_readings_of_one_fact("unknown_identifier",
+                                                 "unknown_identifier")
 
 
 def check_table_context_removes_a_temporal_signal_and_adds_nothing():

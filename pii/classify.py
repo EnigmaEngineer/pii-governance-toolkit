@@ -40,7 +40,7 @@ sample warehouse is most of the timestamps.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -65,6 +65,9 @@ class Arm(Enum):
     NAME = "name"
     VALUE = "value"
     STRUCTURE = "structure"
+    # The fourth arm reads values and is the only one not in `ALL_ARMS`. See `pii/sample.py`
+    # for what it gives up to run.
+    SAMPLE = "sample"
 
 
 # The default arm set, and the only one the shipped tool runs. It exists as a value rather
@@ -73,6 +76,11 @@ class Arm(Enum):
 # That worked and it is the wrong shape: a measurement that reaches into another module's
 # globals cannot be checked, and anything else running at the same time sees the stub.
 ALL_ARMS: Tuple[Arm, ...] = (Arm.NAME, Arm.VALUE, Arm.STRUCTURE)
+
+# Every arm including the one that reads values. Not a default anywhere and not reachable by
+# leaving an argument out. A caller asking for this has decided that discovery on the
+# warehouse in front of them is worth more than the guarantee the other three arms keep.
+ARMS_WITH_SAMPLING: Tuple[Arm, ...] = ALL_ARMS + (Arm.SAMPLE,)
 
 
 @dataclass(frozen=True)
@@ -127,8 +135,17 @@ class ColumnProfile:
     distinct: int
     mean_length: float
     pattern_hits: Dict[str, int] = field(default_factory=dict)
+    # Evidence from the opt-in sampling arm, which cannot be derived from anything above.
+    # It arrives already built because the arm needs a connection and this object is what a
+    # classifier gets handed. Empty on every profile the shipped tool produces.
+    sampled_signals: Tuple["Signal", ...] = ()
 
     def __post_init__(self) -> None:
+        for s in self.sampled_signals:
+            if s.arm is not Arm.SAMPLE:
+                raise ValueError(
+                    "{} carries a {} signal in its sampled evidence".format(
+                        self.address, s.arm.value))
         if self.rows < 0 or self.non_null < 0:
             raise ValueError("negative row count for {}".format(self.address))
         if self.non_null > self.rows:
@@ -159,6 +176,10 @@ class ColumnProfile:
         if self.non_null == 0:
             return 0.0
         return self.distinct / self.non_null
+
+    def with_sampled_signals(self, signals: Tuple["Signal", ...]) -> "ColumnProfile":
+        """A copy carrying sampled evidence. The original is untouched and frozen."""
+        return replace(self, sampled_signals=tuple(signals))
 
 
 # Tokens, matched against the column name split on underscores and camel case boundaries.
@@ -376,7 +397,27 @@ def two_readings_of_one_fact(first: str, second: str) -> bool:
     different categories carrying two different masking policies, which is the disagreement
     a review queue exists to settle. The granularity family is the real test, because only
     a category carrying a threshold has a coarser form to be confused with.
+
+    There is now a second case that is not about granularity at all. See the comment on it
+    below for the three columns that paid for it.
     """
+    # The sampling arm's unnamed finding is the coarsest reading there is. `there is an
+    # identifier in this column` and `it is a national identifier` are one finding at two
+    # coarsenesses in exactly the sense this function was written for, and the first
+    # measurement of the arm showed the cost of not saying so. Turning it on dropped
+    # `raw.patient.ssn` from 0.9943 to 0.7253, `raw.patient.phone` from 0.9525 to 0.6984
+    # and `raw.patient.mrn` from 0.9000 to 0.6525. All three fell out of accept into
+    # review, so an arm added to find columns the predicates miss took three columns the
+    # classifier already had right away from the masking policy. The arm was agreeing and
+    # the penalty recorded it as a dispute.
+    #
+    # Scoped to a direct identifier on the other side on purpose. An `event_date` beside an
+    # unnamed code is two different findings and a reviewer has something to settle.
+    pair = {first, second}
+    if "unknown_identifier" in pair and len(pair) == 2:
+        other = (pair - {"unknown_identifier"}).pop()
+        return TAXONOMY.get(other).identifiability is Identifiability.DIRECT
+
     a = TAXONOMY.get(first).identifies_at
     b = TAXONOMY.get(second).identifies_at
     if a is None or b is None:
@@ -458,6 +499,8 @@ def column_signals(profile: ColumnProfile,
         out += value_signals(profile)
     if Arm.STRUCTURE in arms:
         out += structure_signals(profile)
+    if Arm.SAMPLE in arms:
+        out += profile.sampled_signals
     return out
 
 
@@ -654,7 +697,26 @@ def band_counts(results: Sequence[Classification]) -> Dict[str, int]:
     return counts
 
 
-def rule_coverage() -> Dict[str, Tuple[bool, bool]]:
+@dataclass(frozen=True)
+class Coverage:
+    """Which arms can ever return one category.
+
+    Three booleans and not a three wide tuple. The two wide tuple this replaces was read by
+    position in three places, and a fourth arm turning `(True, False)` into
+    `(True, False, False)` is the kind of change that keeps working and starts meaning
+    something else.
+    """
+
+    by_name: bool
+    by_value: bool
+    by_sample: bool
+
+    @property
+    def reachable(self) -> bool:
+        return self.by_name or self.by_value or self.by_sample
+
+
+def rule_coverage() -> Dict[str, Coverage]:
     """Per category, whether any arm can ever return it.
 
     A taxonomy entry with no rule behind it is a category this classifier cannot produce
@@ -672,12 +734,25 @@ def rule_coverage() -> Dict[str, Tuple[bool, bool]]:
     value_keys = {key for key, _expr, _s, _w in VALUE_PREDICATES}
     name_keys.add("event_date")
     value_keys.add("free_text_clinical")
-    return {key: (key in name_keys, key in value_keys) for key in TAXONOMY.keys()}
+    # Named here rather than derived, because the sampling arm's rules are conditions over a
+    # shape and a checksum and not a table anything can read. Two entries, and a third one
+    # added to `pii/sample.py` without a line here would be reported as undetectable while
+    # the arm returns it.
+    sample_keys = {"unknown_identifier", "payment_card"}
+    return {
+        key: Coverage(key in name_keys, key in value_keys, key in sample_keys)
+        for key in TAXONOMY.keys()
+    }
 
 
 def undetectable_categories() -> Tuple[str, ...]:
-    """Categories no arm can return. Not a defect, and not something to leave silent."""
+    """Categories no arm can return. Not a defect, and not something to leave silent.
+
+    The sampling arm counts here even though it is off by default, so `unknown_identifier`
+    is reachable rather than undetectable. A reader wants to know whether a rule exists at
+    all. Whether the shipped arm set runs it is the next question and a different one.
+    """
     return tuple(sorted(
-        key for key, (by_name, by_value) in rule_coverage().items()
-        if not by_name and not by_value and key != "not_personal"
+        key for key, cover in rule_coverage().items()
+        if not cover.reachable and key != "not_personal"
     ))

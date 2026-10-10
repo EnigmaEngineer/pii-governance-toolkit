@@ -15,6 +15,12 @@ count the matches of patterns it already holds cannot find a pattern nobody wrot
 column of passport numbers in a format this repo has never heard of returns zero on every
 predicate and falls to the name arm. Sampling would find it. Sampling would also read it.
 
+That cost is now a number rather than a paragraph, and `pii/sample.py` is where it was
+measured. Nothing in this module changed to get it. The sampling arm takes its own
+connection and builds its own evidence, and the only mark it leaves here is the
+`sampled_signals` field in the allowlist below. A profile this module produces still holds
+no value and no shape, because this module never asks for one.
+
 One query per column rather than one per table. A table query would be fewer round trips
 and it would have to name every predicate for every column, which is a product that grows
 quadratically in the width of the table and produces SQL nobody can read in a log.
@@ -97,7 +103,12 @@ def profiles_hold_no_values(profiles: Sequence[ColumnProfile]) -> Tuple[str, ...
     report easier to read.
     """
     allowed = {"table", "column", "sql_type", "nullable", "is_key",
-               "rows", "non_null", "distinct", "mean_length", "pattern_hits"}
+               "rows", "non_null", "distinct", "mean_length", "pattern_hits",
+               # Allowed and not free. A sampled signal's detail is built from a shape and
+               # two integers, so what it carries is bounded by the shape allowlist in
+               # `pii/sample.py` and checked by `samples_hold_no_values` rather than here.
+               # This check cannot reach the shape, since the sample object stays behind.
+               "sampled_signals"}
     bad: List[str] = []
     for p in profiles:
         extra = set(vars(p)) - allowed
