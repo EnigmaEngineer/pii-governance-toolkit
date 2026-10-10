@@ -436,5 +436,10 @@
       ]
     }
   ],
-  "decides_nothing": []
+  "decides_nothing": [],
+  "removals_measured": [
+    "name",
+    "value",
+    "structure"
+  ]
 }

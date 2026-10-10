@@ -1096,9 +1096,101 @@ Sampling would also mean a tool pulling personal data out of the warehouse it wa
 at in order to decide whether that data is personal. The rows would then be in the process.
 They would be in a traceback, and in whatever the caller did next.
 
-The floor does sample, which is why `pii/naive.py` is the only thing in the repo that reads
-a value. It stays that way because a comparison against a floor nobody ran is not a
-comparison.
+The floor does sample, which is why `pii/naive.py` was the only thing in the repo that read
+a value for a long time. `pii/sample.py` is the second, it is off by default, and the
+section below is what it cost to find out what the refusal was worth.
+
+## What the refusal costs, measured twice
+
+`pii/sample.py` is an opt-in fourth arm. `classify.ALL_ARMS` does not contain it, so a
+caller who leaves the argument out gets the three arms that never read a value. Asking for
+it means asking for `ARMS_WITH_SAMPLING` by name.
+
+What crosses the boundary once it is on is a shape. Every letter becomes `A` and every digit
+becomes `9` and a separator from a short allowlist survives, so `AB1234567` arrives as
+`AA9999999`. That is a projection and not a redaction. The honest summary is that the no
+values property is now a no values modulo a projection property, which is weaker, and
+`sample.samples_hold_no_values` checks the allowlist rather than trusting the sentence.
+
+**Reading one. The shipped warehouse, forty two columns.**
+
+```
+arms                       found  masked    wrong   bands moved
+declaration only           20/20      12        2             0
+with sampling              20/20      12        2             0
+```
+
+Zero. Four of the forty two columns produce a sampled signal and all four agree with a
+column the name arm or the value arm already had. On the warehouse this repo publishes
+figures about, the arm that reads values changes no decision for anybody.
+
+```
+raw.encounter.attending_npi   unknown_identifier  0.5368  shape 9999999999,    98% distinct
+raw.patient.mrn               unknown_identifier  0.5500  shape AAA99999999,  100% distinct
+raw.patient.phone             unknown_identifier  0.5335  shape +99999999999, 100% distinct
+raw.patient.ssn               unknown_identifier  0.5412  shape 999-99-9999,  100% distinct
+```
+
+Getting to zero took a fix. The first reading moved three bands and every one of them moved
+down. `raw.patient.ssn` fell from 0.9943 to 0.7253, `raw.patient.phone` from 0.9525 to
+0.6984 and `raw.patient.mrn` from 0.9000 to 0.6525. All three left the accept band, so
+auto masking dropped from 12 columns to 9. An arm added to find columns the predicates miss
+had taken three columns the classifier already had right away from the masking policy.
+
+The cause is the conflict penalty. A second category scoring well is normally a dispute a
+reviewer settles, and `unknown_identifier` is a second category by construction on every
+column any other arm already named. The arm was agreeing and the penalty recorded it as a
+fight. `classify.two_readings_of_one_fact` now waives the penalty when one side is
+`unknown_identifier` and the other is a direct identifier, because `there is an identifier
+here` is the coarsest possible reading of `it is a national identifier`. It stays in force
+against a quasi identifier, where the two really are different findings.
+
+**Reading two. Four columns formatted outside the predicate set.**
+
+This is the measurement the sample warehouse cannot give. I wrote that corpus and those
+predicates in the same week, so every format in it is one I thought of.
+`probe.outside_rule` lives in `pii/sample_bench.py` and in no declared schema, which is why
+the pinned schema fingerprint did not move.
+
+```
+column             planted                declaration only   with sampling                  verdict
+travel_doc_ref     national_id            ignore 0.0000      review unknown_identifier 0.5500  recovered
+payer_ref          payment_card           ignore 0.0000      accept payment_card 0.8800         recovered
+site_patient_ref   medical_record_number  ignore 0.0000      ignore not_personal 0.0000         still missed
+request_ref        not_personal           ignore 0.0000      review unknown_identifier 0.5500   false alarm
+row_id             not_personal           ignore 0.0000      ignore not_personal 0.0000         unchanged
+```
+
+Two of the three personal columns come back. One does not. One column that is not personal
+gets flagged.
+
+`travel_doc_ref` holds a passport in `AA9999999` form and nothing in the repo describes that
+format. It comes back as an identifier of unknown kind at review confidence, which is the
+strongest honest answer. `unknown_identifier` sits under the accept threshold on purpose. A
+tool that cannot name what it found has no business deciding what happens to it.
+
+`payer_ref` is the one place the arm beats a predicate rather than a missing predicate. It
+holds a Luhn valid card number written with slashes, and the digit count predicate strips
+spaces and hyphens before counting, so the slash defeats it. A checksum is evidence about
+what a number is rather than about how long it is, so this one is named correctly and lands
+in accept at 0.8800.
+
+`site_patient_ref` is four site formats at a quarter each. No shape reaches the
+concentration threshold, so nothing fires, and the ten digit variant does not reach the
+telephone predicate's match floor either. Sampling misses it exactly as the predicates do.
+
+`request_ref` is a trace id. Fixed shape, unique per row, about nobody. The arm flags it,
+and the cost is not one wasted review. `unknown_identifier` is a direct identifier, so
+`table_is_person_linked` goes from false to true on this table and every other column in it
+is now read in the context of a table about people. One wrong column moved the verdict for
+the whole table.
+
+The fixture is mine and it grades the mechanism rather than the coverage. A shape rule that
+found four shapes I chose would say nothing. The claim is narrower. The rule holds no
+hypothesis about passports, slashed card formats or trace ids, and it still separates three
+of those five columns from nothing at all. It also brings two hypotheses it could not avoid.
+A Luhn check is a payment card hypothesis. The date template list exists because a timestamp
+cast to text is a fixed shape high cardinality code by every structural test the arm applies.
 
 ## What a missing value does to a claim about a column
 
@@ -1126,9 +1218,10 @@ deciding almost nothing.
 ## Seven categories with no column, and six with no rule either
 
 ```
-7 of 24 categories have no column in this warehouse
+8 of 25 categories have no column in this warehouse
 6 of those also have no rule in any arm, so nothing can return them
-1 has a rule and no column, which is the one worth a fixture: payment_card
+2 have a rule and no column, which is the pair worth a fixture:
+    payment_card, unknown_identifier
 ```
 
 The taxonomy names seven things the sample warehouse has no example of. Account numbers and
@@ -1143,11 +1236,16 @@ tables rather than from a list maintained beside them.
 `payment_card` is the one that was different. It had a token rule and a value predicate. Both were reachable and both looked reasonable,
 and neither had ever run against anything. It has a fixture now. A rule that has never fired is the easiest kind of coverage to fake.
 
+`unknown_identifier` joined that list on 2026-10-10 and it is reachable only by the opt-in
+sampling arm. The coverage table carries a third column for that arm, so reachable at all
+and reachable by the arm set a given run used are two separate readings. Both of them have a
+fixture in `probe.outside_rule`.
+
 ## Running the checks
 
 ```
-python3 tests/run_all.py            527 checks, standard library only
-python3 tests/run_with_duckdb.py    599 checks, needs the driver
+python3 tests/run_all.py            552 checks, standard library only
+python3 tests/run_with_duckdb.py    638 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -1394,6 +1492,24 @@ accept everything, and it is labelled a hypothesis rather than a result.
 **`masking_expression` implements two of the seven granularities.** `YEAR` and `POSTAL_3`.
 The rest raise rather than returning the column untouched. The taxonomy is wider than the
 applier.
+
+**The sampling arm reads an ordered sample and that is a limitation rather than a choice.**
+`sample.sample_column` takes the first 500 rows. An ordered sample of a clustered table sees
+one region of it, so a format used by one site only can be missed outright even when the
+shape rule would have found it. A random sample costs a full scan on this warehouse and
+nothing here has measured what that costs at width.
+
+**The no values property is weaker than it was.** It used to be that the profile held
+metadata and integers. With the sampling arm on it also holds signals whose detail carries a
+shape, and a shape keeps the column's punctuation verbatim. The bound on that is an
+allowlist of twelve separator characters and a check over it, which is a real bound and not
+the same bound as before. The arm is off by default for this reason and not only for the
+discovery tradeoff.
+
+**The fixture that grades the sampling arm is mine, same as the planted labels.** Four
+columns, four formats I chose. It says the mechanism separates a fixed shape code from
+nothing without holding a rule for that kind of code. It does not say what share of real
+unknown formats the arm would find, and nothing here could.
 
 **The planted labels are mine.** Only the Safe Harbor clause list has another author. The
 recall figures are a classifier I wrote graded on a schema I wrote against a scope somebody

@@ -1,0 +1,92 @@
+{
+  "bench": {
+    "columns": [
+      {
+        "address": "probe.outside_rule.payer_ref",
+        "after_band": "accept",
+        "after_category": "payment_card",
+        "before_band": "ignore",
+        "planted": "payment_card",
+        "verdict": "recovered"
+      },
+      {
+        "address": "probe.outside_rule.request_ref",
+        "after_band": "review",
+        "after_category": "unknown_identifier",
+        "before_band": "ignore",
+        "planted": "not_personal",
+        "verdict": "false alarm"
+      },
+      {
+        "address": "probe.outside_rule.row_id",
+        "after_band": "ignore",
+        "after_category": "not_personal",
+        "before_band": "ignore",
+        "planted": "not_personal",
+        "verdict": "unchanged"
+      },
+      {
+        "address": "probe.outside_rule.site_patient_ref",
+        "after_band": "ignore",
+        "after_category": "not_personal",
+        "before_band": "ignore",
+        "planted": "medical_record_number",
+        "verdict": "still missed"
+      },
+      {
+        "address": "probe.outside_rule.travel_doc_ref",
+        "after_band": "review",
+        "after_category": "unknown_identifier",
+        "before_band": "ignore",
+        "planted": "national_id",
+        "verdict": "recovered"
+      }
+    ],
+    "counts": {
+      "false alarm": 1,
+      "recovered": 2,
+      "still missed": 1,
+      "unchanged": 1
+    },
+    "person_linked_after": true,
+    "person_linked_before": false,
+    "rows": 400,
+    "table": "probe.outside_rule"
+  },
+  "sample_limit": 500,
+  "warehouse": {
+    "arm_sets": [
+      {
+        "arms": [
+          "name",
+          "value",
+          "structure"
+        ],
+        "bands_moved": 0,
+        "false_alarms": 2,
+        "found": 20,
+        "in_scope": 20,
+        "label": "declaration only",
+        "masked": 12,
+        "moves": []
+      },
+      {
+        "arms": [
+          "name",
+          "value",
+          "structure",
+          "sample"
+        ],
+        "bands_moved": 0,
+        "false_alarms": 2,
+        "found": 20,
+        "in_scope": 20,
+        "label": "with sampling",
+        "masked": 12,
+        "moves": []
+      }
+    ],
+    "decides_nothing": [],
+    "removals_measured": []
+  }
+}

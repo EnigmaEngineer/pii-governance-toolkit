@@ -111,6 +111,18 @@ class Report:
                 return r
         raise KeyError("no reading labelled {!r}".format(label))
 
+    def removals_measured(self) -> Tuple[Arm, ...]:
+        """Arms this report has a single removal row for.
+
+        `ARM_SETS` is a default and not the only thing callers pass. `scripts/sample_probe.py`
+        runs two labels of its own and the first version of `decides_nothing` raised a
+        KeyError on `without name` rather than saying it had nothing to go on. An empty
+        answer from `decides_nothing` and an unanswerable one are different, so this is what
+        separates them and the manifest carries both.
+        """
+        labels = {r.label for r in self.readings}
+        return tuple(arm for arm in ALL_ARMS if REMOVAL_LABEL[arm] in labels)
+
     def decides_nothing(self) -> Tuple[Arm, ...]:
         """Arms whose removal moves no band at all.
 
@@ -122,7 +134,7 @@ class Report:
         anything needed it.
         """
         return tuple(
-            arm for arm in ALL_ARMS
+            arm for arm in self.removals_measured()
             if self.by_label(REMOVAL_LABEL[arm]).bands_moved == 0
         )
 
@@ -153,6 +165,7 @@ class Report:
                 }
                 for r in self.readings
             ],
+            "removals_measured": [a.value for a in self.removals_measured()],
             "decides_nothing": [a.value for a in self.decides_nothing()],
         }
 

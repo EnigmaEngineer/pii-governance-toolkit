@@ -28,6 +28,7 @@ EXTRA_MODULES = [
     "tests.test_mask_applied",
     "tests.test_compliance_document",
     "tests.test_ablation_warehouse",
+    "tests.test_sample_warehouse",
     "tests.test_readme",
 ]
 
