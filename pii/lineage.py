@@ -515,6 +515,30 @@ def read_insert_select(sql: str, target_columns: Optional[Sequence[str]] = None)
 
     return Graph(edges=tuple(edges), refusals=tuple(refusals))
 
+def warehouse_graph(con) -> "Graph":
+    """The sample warehouse's graph, built in one place.
+
+    These six lines used to live in `scripts/classify_probe.py` and in
+    `scripts/compliance_report.py`, reading the same statement and merging the same keys and
+    agreeing by luck. `ot-126` recorded it on 2026-10-09 and said it was due on the day a
+    third caller appeared. `scripts/sample_probe.py` was that caller on 2026-10-10.
+
+    It lives here rather than in a script because the probes are not a library and a probe
+    importing another probe to borrow a function is the shape that cost an afternoon in
+    `tests/runner.py`. The cost of putting it here is that this module now knows the sample
+    schema, which the parser above deliberately does not. That is a real coupling and it is
+    the smaller of the two.
+    """
+    from pii import crawl, schema
+
+    cols = [c.name for c in
+            schema.tables_by_fqn()["analytics.encounter_daily"].columns]
+    derived = read_insert_select(
+        schema.DERIVED_SQL["analytics.encounter_daily"], cols)
+    keys = Graph(edges=foreign_key_edges(con, crawl.ENGINE_SCHEMAS))
+    return derived.merge(keys)
+
+
 def foreign_key_edges(con, engine_schemas: Sequence[str]) -> Tuple[Edge, ...]:
     """Declared referential edges, out of the catalog rather than out of a name.
 

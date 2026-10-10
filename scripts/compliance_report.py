@@ -35,12 +35,7 @@ WINDOW_DAYS = 113
 
 
 def build_graph(con):
-    cols = [c.name for c in
-            schema.tables_by_fqn()["analytics.encounter_daily"].columns]
-    derived = lineage.read_insert_select(
-        schema.DERIVED_SQL["analytics.encounter_daily"], cols)
-    keys = lineage.Graph(edges=lineage.foreign_key_edges(con, crawl.ENGINE_SCHEMAS))
-    return derived.merge(keys)
+    return lineage.warehouse_graph(con)
 
 
 def main():
