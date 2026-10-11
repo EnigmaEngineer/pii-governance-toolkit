@@ -21,9 +21,16 @@ connection and builds its own evidence, and the only mark it leaves here is the
 `sampled_signals` field in the allowlist below. A profile this module produces still holds
 no value and no shape, because this module never asks for one.
 
-One query per column rather than one per table. A table query would be fewer round trips
-and it would have to name every predicate for every column, which is a product that grows
-quadratically in the width of the table and produces SQL nobody can read in a log.
+One query per column was the original shape and the reason given for it was wrong. The
+docstring said a table-wide query names every predicate for every column, which is a
+product growing quadratically in the width of the table. It is not. The predicate set is
+fixed at six, so a table of W columns needs 9W expressions, which is linear. `ot-078`
+asked where one query per column stops being fine and the answer turned out to start with
+an arithmetic error in the reason for not asking.
+
+Both shapes are here now. `profile_column` is the reference implementation and
+`profile_table` is the batched one, and `disagreements` is the check that holds them to
+the same answer rather than a paragraph saying they agree. `pii/scale.py` times them.
 """
 
 from __future__ import annotations
@@ -83,6 +90,122 @@ def profile_column(con, table_schema: str, table_name: str, column) -> ColumnPro
         mean_length=float(mean_length) if mean_length is not None else 0.0,
         pattern_hits=hits,
     )
+
+
+def _profile_table_sql(table_schema: str, table_name: str,
+                       columns: Sequence) -> Tuple[str, Tuple[str, ...], int]:
+    """One statement covering every column of a table, and how to read the row back.
+
+    Returns the SQL, the predicate keys in the order they appear per column, and the
+    stride, which is how many of the returned values belong to each column. Three things
+    rather than one because the row that comes back is flat and the only way to cut it
+    into columns is to know the stride, and a stride computed at the call site is a second
+    copy of a fact this function already decided.
+
+    `count(*)` is named once and shared. Every column of a table has the same row count
+    and the per-column path asks for it W times.
+    """
+    parts: List[str] = ["count(*)"]
+    keys: List[str] = []
+    for i, column in enumerate(columns):
+        col = _quote(column.name)
+        parts.append("count({})".format(col))
+        parts.append("count(distinct {})".format(col))
+        parts.append("avg(length(cast({} as varchar)))".format(col))
+        for key, expr, _strength, _why in VALUE_PREDICATES:
+            parts.append("count(*) filter (where {})".format(expr.format(c=col)))
+            if i == 0:
+                keys.append(key)
+    stride = 3 + len(VALUE_PREDICATES)
+    sql = "SELECT {} FROM {}.{}".format(
+        ", ".join(parts), _quote(table_schema), _quote(table_name))
+    return sql, tuple(keys), stride
+
+
+def profile_table(con, table_schema: str, table_name: str,
+                  columns: Sequence) -> Tuple[ColumnProfile, ...]:
+    """Profile every column of one table in one round trip.
+
+    The same numbers `profile_column` returns, obtained by naming the same expressions in
+    one statement instead of W. `disagreements` is what holds that claim up.
+
+    An empty column list returns nothing without touching the database. A table with no
+    columns is not a thing DuckDB will produce, and `SELECT count(*) FROM t` with nothing
+    to cut into would otherwise come back as a row this function has to decide what to do
+    with.
+    """
+    if not columns:
+        return ()
+    sql, keys, stride = _profile_table_sql(table_schema, table_name, columns)
+    row = con.execute(sql).fetchone()
+    rows = row[0]
+    out: List[ColumnProfile] = []
+    for i, column in enumerate(columns):
+        base = 1 + i * stride
+        non_null, distinct, mean_length = row[base], row[base + 1], row[base + 2]
+        hits = {}
+        for key, value in zip(keys, row[base + 3:base + stride]):
+            if value > non_null:
+                raise ValueError(
+                    "predicate {} matched {} of {} non null values in {}.{}.{}".format(
+                        key, value, non_null, table_schema, table_name, column.name))
+            hits[key] = int(value)
+        out.append(ColumnProfile(
+            table="{}.{}".format(table_schema, table_name),
+            column=column.name,
+            sql_type=column.sql_type,
+            nullable=column.nullable,
+            is_key=column.is_key,
+            rows=int(rows),
+            non_null=int(non_null),
+            distinct=int(distinct),
+            mean_length=float(mean_length) if mean_length is not None else 0.0,
+            pattern_hits=hits,
+        ))
+    return tuple(out)
+
+
+def profile_crawl_batched(con, crawled: Crawl) -> Tuple[ColumnProfile, ...]:
+    """`profile_crawl` at one statement per table instead of one per column."""
+    out: List[ColumnProfile] = []
+    for t in crawled.tables:
+        out.extend(profile_table(con, t.schema, t.name, t.columns))
+    return tuple(out)
+
+
+def disagreements(first: Sequence[ColumnProfile],
+                  second: Sequence[ColumnProfile]) -> Tuple[str, ...]:
+    """Where two profile sets differ, field by field.
+
+    This is the whole justification for the batched path existing. A faster query shape
+    that returns a different number is not a faster query shape, it is a second classifier.
+    Floats are compared with a tolerance because `avg` over a different expression order
+    can land a bit apart, and integers are compared exactly because a count that moves is a
+    defect rather than a rounding.
+    """
+    by_address = {p.address: p for p in second}
+    bad: List[str] = []
+    if len(first) != len(second):
+        bad.append("{} profiles against {}".format(len(first), len(second)))
+    for a in first:
+        b = by_address.get(a.address)
+        if b is None:
+            bad.append("{} missing from the second set".format(a.address))
+            continue
+        for field in ("sql_type", "nullable", "is_key", "rows", "non_null", "distinct"):
+            if getattr(a, field) != getattr(b, field):
+                bad.append("{} {} is {} and {}".format(
+                    a.address, field, getattr(a, field), getattr(b, field)))
+        if abs(a.mean_length - b.mean_length) > 1e-9:
+            bad.append("{} mean_length is {} and {}".format(
+                a.address, a.mean_length, b.mean_length))
+        if a.pattern_hits != b.pattern_hits:
+            for key in sorted(set(a.pattern_hits) | set(b.pattern_hits)):
+                if a.pattern_hits.get(key) != b.pattern_hits.get(key):
+                    bad.append("{} hit {} is {} and {}".format(
+                        a.address, key, a.pattern_hits.get(key),
+                        b.pattern_hits.get(key)))
+    return tuple(bad)
 
 
 def profile_crawl(con, crawled: Crawl) -> Tuple[ColumnProfile, ...]:

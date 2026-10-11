@@ -210,3 +210,71 @@ def check_profiling_a_crawl_covers_every_column_it_found():
     rates = profile.null_rate_table(profiles)
     assert rates["raw.p.id"] == 0.0
     assert abs(rates["raw.p.email"] - 0.5) < 1e-9
+
+
+def check_the_batched_statement_names_every_predicate_for_every_column():
+    cols = [Column("a", "VARCHAR"), Column("b", "VARCHAR")]
+    sql, keys, stride = profile._profile_table_sql("raw", "patient", cols)
+    assert list(keys) == [k for k, _e, _s, _w in classify.VALUE_PREDICATES]
+    assert stride == 3 + len(keys)
+    assert sql.count("count(*) filter") == len(keys) * len(cols)
+    # One `count(*)` for the table rather than one per column, which is the only expression
+    # the batched shape gets to share.
+    assert sql.count("count(*),") == 1
+    assert sql.startswith("SELECT count(*)")
+    assert 'FROM "raw"."patient"' in sql
+
+
+def check_the_batched_statement_grows_linearly_in_the_width_of_the_table():
+    # The docstring this module shipped with said a table-wide query grows quadratically in
+    # the width. It does not, the predicate set is a fixed six, and this is the check that
+    # pins the correction rather than leaving it as a reworded paragraph.
+    def chars(width):
+        cols = [Column("c{}".format(i), "VARCHAR") for i in range(width)]
+        return len(profile._profile_table_sql("raw", "t", cols)[0])
+
+    small, large = chars(10), chars(100)
+    ratio = large / small
+    assert 9.0 < ratio < 11.0, ratio
+
+
+def check_the_batched_path_returns_the_same_profiles_as_one_query_per_column():
+    con = _con()
+    con.execute("CREATE SCHEMA IF NOT EXISTS raw")
+    con.execute("CREATE TABLE raw.p (id BIGINT PRIMARY KEY, email VARCHAR, "
+                "ssn VARCHAR, sex VARCHAR, empty VARCHAR)")
+    con.execute("INSERT INTO raw.p VALUES "
+                "(1, 'a@b.co', '123-45-6789', 'M', NULL), "
+                "(2, NULL, '000-11-2222', 'F', NULL), "
+                "(3, 'c@d.org', NULL, 'M', NULL)")
+    from pii import crawl
+    crawled = crawl.crawl(con)
+    one_at_a_time = profile.profile_crawl(con, crawled)
+    batched = profile.profile_crawl_batched(con, crawled)
+    assert profile.disagreements(one_at_a_time, batched) == ()
+    # Equality on the dataclass rather than only the field walk, so a field added later
+    # without being added to `disagreements` still fails something.
+    assert one_at_a_time == batched
+
+
+def check_profiling_an_empty_column_list_touches_nothing():
+    # Not a hypothetical. `profile_crawl_batched` hands this function whatever the crawl
+    # found, and a `SELECT count(*)` with no columns to cut up returns a row the caller
+    # would have to invent a meaning for.
+    con = _con()
+    assert profile.profile_table(con, "raw", "nothing_here", []) == ()
+
+
+def check_disagreements_reports_a_count_that_moved_and_a_missing_column():
+    a = ColumnProfile("raw.p", "email", "VARCHAR", True, False, 10, 8, 8, 6.0,
+                      {"email": 8})
+    moved = ColumnProfile("raw.p", "email", "VARCHAR", True, False, 10, 8, 8, 6.0,
+                          {"email": 7})
+    assert profile.disagreements([a], [moved]) == (
+        "raw.p.email hit email is 8 and 7",)
+    assert "missing from the second set" in profile.disagreements([a], [])[1]
+    # A mean length apart by more than the tolerance is a disagreement and a float wobble
+    # is not.
+    wobble = ColumnProfile("raw.p", "email", "VARCHAR", True, False, 10, 8, 8,
+                           6.0 + 1e-12, {"email": 8})
+    assert profile.disagreements([a], [wobble]) == ()
