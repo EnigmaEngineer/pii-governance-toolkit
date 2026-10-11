@@ -28,6 +28,7 @@ MODULES = [
     "tests.test_classify",
     "tests.test_ablation",
     "tests.test_sample",
+    "tests.test_scale",
     "tests.test_lineage",
     "tests.test_mask",
     "tests.test_review",
