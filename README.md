@@ -563,12 +563,12 @@ source nobody knew.
 Strip the mart's column names and the classifier has nothing left:
 
 ```
-column                       on its own               from upstream           
-scratch.rollup_v2.d1         not_personal (ignore)    event_date              
-scratch.rollup_v2.grp        not_personal (ignore)    not_personal            
-scratch.rollup_v2.geo        not_personal (ignore)    postal_code             
-scratch.rollup_v2.n          not_personal (ignore)    not_personal            
-scratch.rollup_v2.dur        not_personal (ignore)    not_personal            
+column                       on its own               from upstream
+scratch.rollup_v2.d1         not_personal (ignore)    event_date
+scratch.rollup_v2.grp        not_personal (ignore)    not_personal
+scratch.rollup_v2.geo        not_personal (ignore)    postal_code
+scratch.rollup_v2.n          not_personal (ignore)    not_personal
+scratch.rollup_v2.dur        not_personal (ignore)    not_personal
 2 columns that read as not personal on their own are personal upstream
 ```
 
@@ -1192,6 +1192,148 @@ of those five columns from nothing at all. It also brings two hypotheses it coul
 A Luhn check is a payment card hypothesis. The date template list exists because a timestamp
 cast to text is a fixed shape high cardinality code by every structural test the arm applies.
 
+## The threshold was never the thing
+
+The sampling arm has four constants in it and on the day it landed none of them had been
+swept. The one that looked like it mattered is `SHAPE_CONCENTRATION`, which says how much
+of a sample has to share one shape before the column counts as fixed format. It ships at
+0.90. `probe.outside_rule.site_patient_ref` is the column the arm misses and it holds four
+site formats at a quarter each. Lowering the threshold to 0.25 should find it.
+
+It does find it. It changes no decision.
+
+```
+the fixture, four columns formatted outside the predicate set
+concentration  signals  recovered  still missed  false alarms  person linked
+         0.20        4          2             1             1           True
+         0.25        4          2             1             1           True
+         0.30        3          2             1             1           True
+         0.50        3          2             1             1           True
+         0.70        3          2             1             1           True
+         0.90        3          2             1             1           True
+         1.00        3          2             1             1           True
+
+the shipped warehouse, forty two columns, through the ablation harness
+concentration  signals   found   masked  false alarms  bands moved
+         0.20        6      20       12             2            0
+         0.25        5      20       12             2            0
+         0.30        4      20       12             2            0
+         0.90        4      20       12             2            0
+         1.00        4      20       12             2            0
+```
+
+Eleven thresholds from 1.00 down to 0.20 and one verdict tally across all of them. Dropping
+to 0.25 produces one more signal on the fixture and one more on the warehouse. Dropping to
+0.20 produces a second one on the warehouse. Every one of them lands in the ignore band,
+which masks nothing and queues nobody.
+
+The reason is arithmetic rather than this fixture. An unnamed identifier's strength is
+`UNKNOWN_IDENTIFIER_STRENGTH` times the share of the sample holding the dominant shape.
+On `site_patient_ref` that is 0.55 times 0.25, which is 0.1375, against a review band that
+opens at 0.35. A column whose dominant shape holds less than
+`REVIEW_AT / UNKNOWN_IDENTIFIER_STRENGTH` of its sample cannot reach a reviewer whatever
+the threshold is set to. At the shipped numbers that floor is 0.6364. The bottom third of
+the threshold's range is decoration.
+
+`sample.concentration_floor` derives that rather than storing it, and two checks pin it.
+One pins the value against the two constants it comes from. The other builds a signal under
+the floor and asserts it lands in ignore. The threshold decides whether evidence exists.
+The strength and the band decide whether anybody hears it. A sweep of the first one alone
+was never going to move anything.
+
+The four thresholds are a `sample.Thresholds` object now rather than four module globals,
+because sweeping a global means rebinding it and a rebind cannot be asserted on. The
+default is the shipped configuration and a check holds the two together.
+
+## One query per column is the right shape, and the reason I gave for it was wrong
+
+`pii/profile.py` opened with a paragraph refusing to batch. One query per table would name
+every predicate for every column, it said, which is a product growing quadratically in the
+width of the table. That is not arithmetic, it is a guess. The predicate set is a fixed six,
+so a table of W columns needs 9W expressions. Linear.
+
+Measured, both shapes, against a generated table at four widths:
+
+```
+                        SQL length growth exponent against width
+per column                             1.005
+batched                                1.005
+```
+
+So the stated reason for the design was wrong. The design was still right, and for a reason
+nobody had written down. Both shapes are in the repo now and `profile.disagreements` holds
+them to the same answer field by field. They agreed at every width.
+
+Median of five passes, one process per shape so the peak memory belongs to one of them.
+Measured on two cores with 3915 MB of memory. DuckDB 1.5.6 running in process:
+
+```
+  cols  shape        stmts  sql chars  median s  spread   ms/col  peak MB
+    42  per column      42      33855     0.153    1.13    3.646       70
+    42  batched          1      32420     0.208    1.24    4.944      364
+    84  per column      84      67782     0.284    1.03    3.386       77
+    84  batched          1      64877     0.510    1.25    6.076     1061
+   168  per column     168     136275     0.582    1.03    3.467       82
+   168  batched          1     130430     1.447    1.22    8.610     1542
+   336  per column     336     273531     1.175    1.03    3.498      100
+   336  batched          1     261806     5.393    1.11   16.050     3612
+   672  per column     672     548043     2.637    1.10    3.924      132
+   672  batched            killed, exit 137, no output
+```
+
+The per column shape costs a flat 3.4 to 3.9 milliseconds a column from 42 wide to 672
+wide. Batching is slower at every width and the gap opens as the table gets wider, from
+1.36 times at 42 columns to 4.59 at 336. Memory is the sharper half. The batched statement
+goes from 5 times the per column peak to 36 times it, and at 672 columns it is 6048
+aggregate expressions in one statement and the OOM killer takes the process.
+
+It is not reading data that costs this. The same statement at ten rows instead of five
+thousand was killed too:
+
+```
+python3 scripts/scale_probe.py --widths 672 --rows 10 --only batched --passes 5
+  exit=137, header printed, no row
+
+python3 scripts/scale_probe.py --widths 672 --rows 10 --only per --passes 5
+  cols  rows  shape        stmts  sql chars  median s  spread  ms/col  peak MB
+   672    10  per column     672     548043     1.049    1.12   1.560       80
+```
+
+Ten rows is fifty bytes a column. So the cost tracks the number of aggregate expressions in
+the statement and not the rows under them. What this measurement does not do is say which
+part of the engine spends it. Binding, planning and the aggregate operator's own per
+expression state all grow with 6048 expressions and nothing here separates them. The honest
+version of the original paragraph is that one query per column is right because W small
+statements cost less than one statement W times the size, and the SQL being unreadable in a
+log was never the reason.
+
+One caveat that points the other way and is worth saying plainly. DuckDB is in process, so
+a round trip here is a function call rather than a network hop. Against a warehouse across
+a wire, 672 round trips cost something this machine cannot measure. The result above is the
+planner cost only. What it rules out is the idea that batching is a free win, and what it
+leaves open is the width and the latency where 672 round trips get expensive enough to pay
+3.6 GB for one statement.
+
+`pii/sample.py` is the second caller and it issues two statements a column rather than one.
+Only the count statement can be collapsed. Batching the value read would mean
+`SELECT c1, c2, ... FROM t LIMIT 500`, which holds 500 values of every column in the process
+at the same instant, and this is the module whose whole subject is holding as few as
+possible. So that one is refused on purpose. The count statement was batched and timed, and
+on this machine the two shapes cannot be separated:
+
+```
+THE SAMPLING ARM'S COUNT STATEMENT AT 168 COLUMNS
+per column      168 statements  median   0.181s  low   0.167s  high   0.195s
+batched           1 statements  median   0.105s  low   0.075s  high   0.185s
+median ratio 1.72x over 5 passes
+the two ranges overlap, so this machine cannot separate the two shapes
+```
+
+The median says 1.72 times faster and the ranges overlap, so there is no result here. The
+probe says so itself rather than leaving the ratio to be quoted on its own. That sentence is
+why the bench repeats every timing. The first version timed each shape once and this
+comparison came back at 0.94 times on one run and 1.29 on the next.
+
 ## What a missing value does to a claim about a column
 
 The floor drops nulls before taking its majority and never says so, so a column that is
@@ -1244,8 +1386,8 @@ fixture in `probe.outside_rule`.
 ## Running the checks
 
 ```
-python3 tests/run_all.py            552 checks, standard library only
-python3 tests/run_with_duckdb.py    638 checks, needs the driver
+python3 tests/run_all.py            578 checks, standard library only
+python3 tests/run_with_duckdb.py    673 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -1458,6 +1600,14 @@ they are not the tool's answers.
 group. Expert determination work does not use that number. It is here because it is the
 smallest integer that is not 1, which is arithmetic rather than privacy, and picking a
 defensible one needs a population and a threat model this corpus does not have.
+
+**The scaling result is a planner cost and not a round trip cost.** DuckDB runs in
+process, so the 672 round trips the per column shape makes here are function calls. The
+measurement shows that one statement with 6048 aggregates in it costs far more to plan than
+672 small ones cost to plan and run, on this engine and this machine. It says nothing about
+a warehouse across a network, where a round trip is milliseconds of latency rather than a
+call. A Snowflake reading would be the one that settles it and there is no account to take
+it on.
 
 **No masked table is written.** Every masking expression is executed, inside the residual
 measurement and inside the checks, and nothing materialises a masked copy of the warehouse.
