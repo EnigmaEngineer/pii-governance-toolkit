@@ -294,3 +294,69 @@ def check_the_lineage_graph_has_one_builder_and_every_caller_agrees():
     finally:
         con.close()
     os.unlink(path)
+
+
+def _bench_sweep():
+    """The fixture profiles and samples, kept apart from `_bench`.
+
+    `_bench` caches the two classifications and the outcomes rather than the profiles, and
+    the sweep needs the profiles and the samples so it can re-attach the signals at each
+    threshold. A second cache rather than widening the first one, because three other
+    checks unpack `_STATE["bench"]` positionally.
+    """
+    if "bench_sweep" in _STATE:
+        return _STATE["bench_sweep"]
+    import duckdb
+
+    path = _fresh_db()
+    con = duckdb.connect(path)
+    try:
+        sample_bench.load(con)
+        table = sample_bench.BENCH
+        profiles = tuple(profile.profile_column(con, table.schema, table.name, c)
+                         for c in table.columns)
+        samples = tuple(sample.sample_column(con, table.schema, table.name, c)
+                        for c in table.columns)
+    finally:
+        con.close()
+    os.unlink(path)
+    _STATE["bench_sweep"] = (profiles, samples)
+    return _STATE["bench_sweep"]
+
+
+def check_the_committed_concentration_sweep_is_what_the_fixture_still_produces():
+    profiles, samples = _bench_sweep()
+    rows = sample_bench.sweep_fixture(profiles, samples)
+    published = _committed()["concentration_sweep"]["fixture"]
+    assert len(rows) == len(published), (len(rows), len(published))
+    for row, want in zip(rows, published):
+        assert abs(row.concentration - want["concentration"]) < 1e-12
+        for field in ("signals", "recovered", "still_missed", "false_alarms",
+                      "unchanged", "person_linked"):
+            assert getattr(row, field) == want[field], (
+                "{} at concentration {} is {} and the manifest says {}. Regenerate with "
+                "{}".format(field, row.concentration, getattr(row, field), want[field],
+                            REGENERATE))
+
+
+def check_no_concentration_in_the_sweep_changes_a_single_verdict():
+    # The result of `ot-129`, pinned. Eleven thresholds from 1.00 down to 0.20 and one
+    # verdict tally across all of them. If a future change makes the threshold matter, this
+    # fails and that is the news rather than a nuisance.
+    profiles, samples = _bench_sweep()
+    rows = sample_bench.sweep_fixture(profiles, samples)
+    tallies = {(r.recovered, r.still_missed, r.false_alarms, r.unchanged) for r in rows}
+    assert len(tallies) == 1, tallies
+
+
+def check_the_sweep_reaches_below_the_decision_floor_or_it_proves_nothing():
+    # A sweep whose lowest value sits above the floor would show nothing moving and the
+    # reason would be that it never got low enough to ask.
+    assert min(sample_bench.CONCENTRATIONS) < sample.concentration_floor()
+
+
+def check_the_decision_floor_in_the_manifest_is_the_derived_one():
+    published = _committed()["concentration_sweep"]["decision_floor"]
+    assert abs(published - sample.concentration_floor()) < 1e-6, (
+        "the manifest floor is {} and the code derives {}. Regenerate with {}".format(
+            published, sample.concentration_floor(), REGENERATE))

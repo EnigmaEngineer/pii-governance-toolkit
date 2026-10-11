@@ -108,7 +108,8 @@ def section_warehouse(con):
         for s in p.sampled_signals:
             print("  {:<40} {:<20} {:.4f}  {}".format(
                 p.address, s.category_key, s.weight, s.detail))
-    return report, samples, leaks
+    pieces = (profiles, samples, upstream, frozenset(safeharbor.mapped_keys()), key_for)
+    return report, samples, leaks, pieces
 
 
 def section_bench(con):
@@ -147,11 +148,74 @@ def section_bench(con):
     linked_after = classify.table_is_person_linked(after)
     print("\ntable reads as person linked: {} before, {} after".format(
         linked_before, linked_after))
-    return outcomes, tally, loaded, (linked_before, linked_after)
+    return outcomes, tally, loaded, (linked_before, linked_after), (profiles, samples)
 
 
-def write_manifest(path, warehouse_report, outcomes, tally, loaded, linked):
+def section_sweep(warehouse_pieces, bench_pieces):
+    """`ot-129`. The shape concentration threshold swept over both readings together.
+
+    One table rather than two runs, because the whole question is whether a threshold that
+    finds more on the fixture costs anything on the warehouse. Swept separately they are
+    two numbers somebody has to hold in their head at the same time.
+    """
+    w_profiles, w_samples, upstream, scope, w_key_for = warehouse_pieces
+    b_profiles, b_samples = bench_pieces
+
+    fixture = sample_bench.sweep_fixture(b_profiles, b_samples)
+    warehouse = sample_bench.sweep_warehouse(
+        w_profiles, w_samples, upstream, scope, w_key_for)
+
+    print("\n\nSHAPE CONCENTRATION SWEEP")
+    print(RULE)
+    print("the fixture, four columns formatted outside the predicate set")
+    print("{:>13} {:>8} {:>10} {:>13} {:>13} {:>10} {:>14}".format(
+        "concentration", "signals", "recovered", "still missed", "false alarms",
+        "net", "person linked"))
+    for r in fixture:
+        print("{:>13.2f} {:>8} {:>10} {:>13} {:>13} {:>10} {:>14}".format(
+            r.concentration, r.signals, r.recovered, r.still_missed,
+            r.false_alarms, r.net, str(r.person_linked)))
+
+    print("\nthe shipped warehouse, forty two columns, through the ablation harness")
+    print("{:>13} {:>8} {:>7} {:>8} {:>13} {:>12}".format(
+        "concentration", "signals", "found", "masked", "false alarms", "bands moved"))
+    for r in warehouse:
+        print("{:>13.2f} {:>8} {:>7} {:>8} {:>13} {:>12}".format(
+            r.concentration, r.signals, r.found, r.masked, r.false_alarms,
+            r.bands_moved))
+
+    shipped = sample.SHAPE_CONCENTRATION
+    floor = sample.concentration_floor()
+    moved = sample_bench.cliff(fixture)
+    print("\nthe shipped concentration is {:.2f}".format(shipped))
+    if moved:
+        print("the highest swept value below it that emits a different number of "
+              "signals is {:.2f}".format(moved))
+    else:
+        print("nothing in this sweep emits a different number of signals")
+
+    # The point of the whole table. Verdicts do not move anywhere on it, and the reason is
+    # arithmetic rather than this fixture.
+    print("the decision floor is {:.4f}, which is REVIEW_AT over "
+          "UNKNOWN_IDENTIFIER_STRENGTH".format(floor))
+    print("a signal from a shape holding less than that lands in the ignore band, so "
+          "every swept value under it")
+    print("emits evidence and changes no decision")
+    verdicts = {(r.recovered, r.still_missed, r.false_alarms) for r in fixture}
+    print("distinct verdict tallies across the whole sweep: {}".format(len(verdicts)))
+    return fixture, warehouse
+
+
+def write_manifest(path, warehouse_report, outcomes, tally, loaded, linked,
+                   fixture_sweep, warehouse_sweep):
     payload = {
+        "concentration_sweep": {
+            "concentrations": list(sample_bench.CONCENTRATIONS),
+            "shipped": sample.SHAPE_CONCENTRATION,
+            "decision_floor": round(sample.concentration_floor(), 6),
+            "fixture": [vars(r) for r in fixture_sweep],
+            "warehouse": [vars(r) for r in warehouse_sweep],
+        },
         "warehouse": warehouse_report.manifest(),
         "bench": {
             "table": sample_bench.BENCH_FQN,
@@ -201,18 +265,21 @@ def main() -> int:
     # next run rather than this one.
     con = connect(args.db, read_only=True)
     try:
-        warehouse_report, _samples, leaks = section_warehouse(con)
+        warehouse_report, _samples, leaks, warehouse_pieces = section_warehouse(con)
     finally:
         con.close()
 
     bench_con = connect(args.bench_db, read_only=False)
     try:
-        outcomes, tally, loaded, linked = section_bench(bench_con)
+        outcomes, tally, loaded, linked, bench_pieces = section_bench(bench_con)
     finally:
         bench_con.close()
 
+    fixture_sweep, warehouse_sweep = section_sweep(warehouse_pieces, bench_pieces)
+
     if args.manifest:
-        write_manifest(args.manifest, warehouse_report, outcomes, tally, loaded, linked)
+        write_manifest(args.manifest, warehouse_report, outcomes, tally, loaded, linked,
+                       fixture_sweep, warehouse_sweep)
 
     if leaks:
         print("\nFAIL: a shape carried something outside the allowlist")

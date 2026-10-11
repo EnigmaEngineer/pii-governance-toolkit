@@ -53,6 +53,214 @@
     "rows": 400,
     "table": "probe.outside_rule"
   },
+  "concentration_sweep": {
+    "concentrations": [
+      0.2,
+      0.25,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      0.95,
+      1.0
+    ],
+    "decision_floor": 0.636364,
+    "fixture": [
+      {
+        "concentration": 0.2,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 4,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.25,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 4,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.3,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.4,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.5,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.6,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.7,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.8,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.9,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 0.95,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      },
+      {
+        "concentration": 1.0,
+        "false_alarms": 1,
+        "person_linked": true,
+        "recovered": 2,
+        "signals": 3,
+        "still_missed": 1,
+        "unchanged": 1
+      }
+    ],
+    "shipped": 0.9,
+    "warehouse": [
+      {
+        "bands_moved": 0,
+        "concentration": 0.2,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 6
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.25,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 5
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.3,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.4,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.5,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.6,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.7,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.8,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.9,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 0.95,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      },
+      {
+        "bands_moved": 0,
+        "concentration": 1.0,
+        "false_alarms": 2,
+        "found": 20,
+        "masked": 12,
+        "signals": 4
+      }
+    ]
+  },
   "sample_limit": 500,
   "warehouse": {
     "arm_sets": [

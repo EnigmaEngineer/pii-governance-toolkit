@@ -38,7 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from pii.classify import Arm, ColumnProfile, Signal
+from pii.classify import REVIEW_AT, Arm, ColumnProfile, Signal
 from pii.crawl import _quote
 
 # Characters a shape is allowed to keep verbatim. Everything alphabetic becomes `A` and
@@ -61,14 +61,73 @@ IDENTIFIER_DISTINCT = 0.90
 IDENTIFIER_MIN_LENGTH = 6
 IDENTIFIER_MAX_LENGTH = 24
 
-# TODO: none of the four constants above is swept. `scripts/classify_probe.py` sweeps
-# ACCEPT_AT and REVIEW_AT and publishes where the cliff is, and these were chosen by looking
-# at one fixture. The shape concentration one is the one that matters, because it is the
-# only thing separating the column this arm finds from the column it misses.
+# A code with no letter in it has to be long enough that a year, a quantity or a small
+# count cannot reach it. Eight digits is a date and four is a year, which is the argument
+# for nine. `ot-129` is the thread that says an argument is not a sweep.
+IDENTIFIER_DIGIT_FLOOR = 9
+
+@dataclass(frozen=True)
+class Thresholds:
+    """The four numbers the shape rule turns on, in one object so a sweep can move them.
+
+    `ot-129` is why this exists. Four module globals chosen by looking at one fixture, and
+    `scripts/classify_probe.py` sweeps the band thresholds and publishes where the cliff
+    sits while these got none of that. A sweep over a module global means rebinding it,
+    which is the pattern day 1 removed from the ablation harness because a rebind cannot be
+    asserted on and leaves the caller unsure which version ran.
+
+    One parameter and not four. `ot-128` is the standing warning about widening a signature
+    for a measurement, and the shape that respects it is a named object the default of which
+    is the shipped configuration.
+    """
+
+    concentration: float = SHAPE_CONCENTRATION
+    distinct: float = IDENTIFIER_DISTINCT
+    min_length: int = IDENTIFIER_MIN_LENGTH
+    max_length: int = IDENTIFIER_MAX_LENGTH
+    digit_floor: int = IDENTIFIER_DIGIT_FLOOR
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.concentration <= 1.0:
+            raise ValueError("concentration {} is not a share".format(self.concentration))
+        if not 0.0 < self.distinct <= 1.0:
+            raise ValueError("distinct {} is not a share".format(self.distinct))
+        if self.min_length > self.max_length:
+            raise ValueError("length range {}..{} is empty".format(
+                self.min_length, self.max_length))
+
+
+SHIPPED = Thresholds()
+
 
 # Deliberately under `classify.ACCEPT_AT`. A finding the tool cannot name must reach a
 # person and must never reach a masking policy on its own.
 UNKNOWN_IDENTIFIER_STRENGTH = 0.55
+
+def concentration_floor(strength: float = UNKNOWN_IDENTIFIER_STRENGTH,
+                        review_at: float = REVIEW_AT) -> float:
+    """The lowest shape concentration that can still change a decision.
+
+    Found by sweeping the concentration on 2026-10-11 and watching nothing move. The
+    concentration threshold decides whether a signal is emitted. The signal's strength is
+    `UNKNOWN_IDENTIFIER_STRENGTH` times the share, and `classify.REVIEW_AT` decides whether
+    a signal is heard. So a column whose dominant shape holds less than
+    `review_at / strength` of the sample emits a signal that lands in the ignore band, which
+    masks nothing and queues nobody. Lowering the threshold under this value produces
+    evidence and no decisions.
+
+    At the shipped 0.55 and 0.35 that is 0.6364. `probe.outside_rule.site_patient_ref` is
+    the column `ot-129` said the threshold was the only thing standing between the arm and,
+    and its dominant shape holds a quarter of the sample. A quarter is under the floor, so
+    the threshold was never what was standing there.
+
+    Derived rather than stored, because it is two other constants and a division and a
+    fourth constant beside them is the fourth place a change has to be remembered.
+    """
+    if strength <= 0.0:
+        raise ValueError("a strength of {} cannot reach any band".format(strength))
+    return review_at / strength
+
 
 LUHN_STRENGTH = 0.88
 LUHN_CONCENTRATION = 0.90
@@ -197,6 +256,64 @@ class ColumnSample:
         return base.startswith(TEMPORAL_TYPE_PREFIXES)
 
 
+def _window_sql(table_schema: str, table_name: str, column_name: str,
+                limit: int = SAMPLE_LIMIT) -> str:
+    """The limited window one column's values are read from."""
+    return "SELECT cast({} as varchar) AS v FROM {}.{} LIMIT {}".format(
+        _quote(column_name), _quote(table_schema), _quote(table_name), int(limit))
+
+
+def sample_counts(con, table_schema: str, table_name: str, column,
+                  limit: int = SAMPLE_LIMIT) -> Tuple[int, int, int]:
+    """Rows read, non null values and distinct values over one column's window.
+
+    One statement per column. `sample_counts_batched` is the same answer for a whole table
+    in one, and `pii/scale.py` times the two against each other.
+    """
+    window = _window_sql(table_schema, table_name, column.name, limit)
+    read, non_null, distinct = con.execute(
+        "SELECT count(*), count(v), count(distinct v) FROM ({})".format(window)
+    ).fetchone()
+    return int(read), int(non_null), int(distinct)
+
+
+def sample_counts_batched(con, table_schema: str, table_name: str,
+                          columns: Sequence, limit: int = SAMPLE_LIMIT
+                          ) -> Dict[str, Tuple[int, int, int]]:
+    """The same counts for every column of a table in one statement, keyed by column name.
+
+    The window is shared, which is the thing that makes this one statement rather than W.
+    Every column is counted over the same first `limit` rows of the table instead of over
+    its own `LIMIT` of the same table, and on an unordered scan those are the same rows. It
+    is a different claim though, and the honest version of it is that this returns the
+    counts for one window rather than the counts for W windows that happen to coincide.
+
+    The value read is deliberately not batched. `SELECT c1, c2, ... FROM t LIMIT 500` would
+    be one round trip and it would put 500 values of every column in the process at the same
+    instant. This module exists to hold as few values as possible for as short a time as
+    possible, so the shape that saves a round trip by holding W times as much is the wrong
+    trade here even though it is the faster one. `pii/scale.py` measures what refusing it
+    costs so the refusal is a number rather than a principle.
+    """
+    if not columns:
+        return {}
+    quoted = [_quote(c.name) for c in columns]
+    inner = "SELECT {} FROM {}.{} LIMIT {}".format(
+        ", ".join("cast({} as varchar) AS v{}".format(q, i)
+                  for i, q in enumerate(quoted)),
+        _quote(table_schema), _quote(table_name), int(limit))
+    parts = ["count(*)"]
+    for i in range(len(columns)):
+        parts.append("count(v{})".format(i))
+        parts.append("count(distinct v{})".format(i))
+    row = con.execute("SELECT {} FROM ({})".format(", ".join(parts), inner)).fetchone()
+    read = int(row[0])
+    out: Dict[str, Tuple[int, int, int]] = {}
+    for i, c in enumerate(columns):
+        out[c.name] = (read, int(row[1 + i * 2]), int(row[2 + i * 2]))
+    return out
+
+
 def sample_column(con, table_schema: str, table_name: str, column,
                   limit: int = SAMPLE_LIMIT) -> ColumnSample:
     """Read up to `limit` values of one column and return everything except the values.
@@ -211,13 +328,13 @@ def sample_column(con, table_schema: str, table_name: str, column,
     place a value lives for the length of a call. The first version held every sampled value
     in a set to count them, which worked and kept 500 values alive in a frame inside the
     module whose subject is not doing that.
+
+    Two statements per column is also why this module is the profiler's scaling question
+    twice over. `sample_counts_batched` collapses the first of them for a whole table and
+    deliberately leaves the second alone, and the reason is written there.
     """
-    col = _quote(column.name)
-    window = "SELECT cast({} as varchar) AS v FROM {}.{} LIMIT {}".format(
-        col, _quote(table_schema), _quote(table_name), int(limit))
-    read, non_null, distinct = con.execute(
-        "SELECT count(*), count(v), count(distinct v) FROM ({})".format(window)
-    ).fetchone()
+    window = _window_sql(table_schema, table_name, column.name, limit)
+    read, non_null, distinct = sample_counts(con, table_schema, table_name, column, limit)
 
     shape_counts: Dict[str, int] = {}
     luhn_candidates = 0
@@ -249,7 +366,8 @@ def sample_column(con, table_schema: str, table_name: str, column,
     )
 
 
-def _looks_like_a_code(sample: ColumnSample, dominant: str) -> bool:
+def _looks_like_a_code(sample: ColumnSample, dominant: str,
+                       thresholds: Thresholds = SHIPPED) -> bool:
     """Whether a fixed shape is the shape of an issued code rather than of something else.
 
     Three refusals. A declared temporal type is a date and the catalog already said so. A
@@ -264,19 +382,20 @@ def _looks_like_a_code(sample: ColumnSample, dominant: str) -> bool:
         return False
     if SHAPE_OTHER in dominant:
         return False
-    if not (IDENTIFIER_MIN_LENGTH <= len(dominant) <= IDENTIFIER_MAX_LENGTH):
+    if not (thresholds.min_length <= len(dominant) <= thresholds.max_length):
         return False
-    if sample.distinct_ratio < IDENTIFIER_DISTINCT:
+    if sample.distinct_ratio < thresholds.distinct:
         return False
     # A letter makes it unambiguous. Without one the shape has to be long enough that a
     # year, a quantity or a small count cannot reach it.
     digit_count = dominant.count(SHAPE_DIGIT)
     if SHAPE_ALPHA in dominant:
         return True
-    return digit_count >= 9
+    return digit_count >= thresholds.digit_floor
 
 
-def sample_signals(sample: ColumnSample) -> Tuple[Signal, ...]:
+def sample_signals(sample: ColumnSample,
+                   thresholds: Thresholds = SHIPPED) -> Tuple[Signal, ...]:
     """Evidence from the shapes and the checksum. No category this module invented.
 
     Two rules. The checksum names a payment card because a checksum is evidence about what
@@ -298,8 +417,8 @@ def sample_signals(sample: ColumnSample) -> Tuple[Signal, ...]:
                 support=sample.support,
             ))
 
-    if (dominant is not None and share >= SHAPE_CONCENTRATION
-            and _looks_like_a_code(sample, dominant)):
+    if (dominant is not None and share >= thresholds.concentration
+            and _looks_like_a_code(sample, dominant, thresholds)):
         out.append(Signal(
             Arm.SAMPLE, "unknown_identifier", UNKNOWN_IDENTIFIER_STRENGTH * share,
             "{} of {} sampled values have the shape {} and {:.0%} of them are "
@@ -328,7 +447,8 @@ def samples_hold_no_values(samples: Sequence[ColumnSample]) -> Tuple[str, ...]:
 
 
 def attach(profiles: Sequence[ColumnProfile],
-           samples: Sequence[ColumnSample]) -> Tuple[ColumnProfile, ...]:
+           samples: Sequence[ColumnSample],
+           thresholds: Thresholds = SHIPPED) -> Tuple[ColumnProfile, ...]:
     """Put each sample's signals on its profile, leaving the sample itself behind.
 
     The signals ride on the profile rather than arriving as a second argument to the
@@ -345,5 +465,5 @@ def attach(profiles: Sequence[ColumnProfile],
         if s is None:
             out.append(p)
             continue
-        out.append(p.with_sampled_signals(sample_signals(s)))
+        out.append(p.with_sampled_signals(sample_signals(s, thresholds)))
     return tuple(out)

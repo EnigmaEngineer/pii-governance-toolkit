@@ -183,3 +183,101 @@ def check_sampled_evidence_contributes_nothing_to_the_shipped_arm_set():
     assert column_signals(p, ALL_ARMS) == ()
     assert len(column_signals(p, ARMS_WITH_SAMPLING)) == 1
 
+
+
+def check_the_shipped_thresholds_are_the_module_constants():
+    # `SHIPPED` is the default on three functions. If it ever stops matching the constants
+    # the README quotes, every published sampling figure is from a configuration nobody
+    # chose.
+    t = sample.SHIPPED
+    assert t.concentration == sample.SHAPE_CONCENTRATION
+    assert t.distinct == sample.IDENTIFIER_DISTINCT
+    assert t.min_length == sample.IDENTIFIER_MIN_LENGTH
+    assert t.max_length == sample.IDENTIFIER_MAX_LENGTH
+    assert t.digit_floor == sample.IDENTIFIER_DIGIT_FLOOR
+
+
+def check_thresholds_refuse_a_share_outside_zero_to_one_and_an_empty_length_range():
+    for bad in ({"concentration": 0.0}, {"concentration": 1.5},
+                {"distinct": -0.1}, {"distinct": 2.0}):
+        try:
+            sample.Thresholds(**bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("accepted {}".format(bad))
+    try:
+        sample.Thresholds(min_length=30, max_length=10)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted an empty length range")
+
+
+def check_lowering_the_concentration_is_what_turns_a_mixed_format_column_into_a_finding():
+    # Four formats at a quarter each is `probe.outside_rule.site_patient_ref`, the column
+    # the arm misses. It is the whole reason `ot-129` wanted this swept.
+    mixed = _sample(shapes={"AAA999999": 25, "AA-999999": 25,
+                            "999999999": 25, "A9999999999": 25})
+    assert sample_signals(mixed) == ()
+    low = sample.Thresholds(concentration=0.25)
+    keys = [s.category_key for s in sample_signals(mixed, low)]
+    assert keys == ["unknown_identifier"], keys
+
+
+def check_the_digit_floor_is_a_threshold_and_not_a_literal_in_the_branch():
+    # Seven digits, which is under the shipped floor of nine and not on the date template
+    # list. Refused as shipped and found once the floor moves under it.
+    seven = _sample(shapes={"9999999": 100})
+    assert sample_signals(seven) == ()
+    assert sample_signals(seven, sample.Thresholds(digit_floor=7))
+
+
+def check_the_date_template_list_refuses_a_shape_before_the_floor_is_consulted():
+    # Eight digits is `99999999`, which is a compact date and is on the template list. The
+    # refusals are ordered and this is the one that has to win, or a sweep that lowers the
+    # floor turns every date column in a warehouse into an unnamed identifier.
+    eight = _sample(shapes={"99999999": 100})
+    assert "99999999" in sample.DATE_SHAPES
+    assert sample_signals(eight, sample.Thresholds(digit_floor=1)) == ()
+
+
+def check_attach_passes_the_thresholds_through_to_the_signals():
+    hit = ColumnProfile("probe.t", "weird", "VARCHAR", True, False, 100, 100, 100, 9.0)
+    mixed = _sample(column="weird", shapes={"AAA999999": 60, "AA-999999": 40})
+    assert sample.attach([hit], [mixed])[0].sampled_signals == ()
+    low = sample.Thresholds(concentration=0.6)
+    assert sample.attach([hit], [mixed], low)[0].sampled_signals
+
+
+def check_the_concentration_floor_is_the_review_band_divided_by_the_strength():
+    from pii.classify import REVIEW_AT
+    floor = sample.concentration_floor()
+    assert abs(floor - REVIEW_AT / sample.UNKNOWN_IDENTIFIER_STRENGTH) < 1e-12
+    assert abs(floor - 0.63636363) < 1e-6
+    # The shipped threshold has to sit above the floor or the arm would be emitting
+    # evidence nothing can act on at its own default.
+    assert sample.SHAPE_CONCENTRATION > floor
+
+
+def check_a_signal_emitted_under_the_floor_cannot_reach_the_review_band():
+    # This is the measured reason the concentration sweep moved no verdicts. Lowering the
+    # threshold emits a signal and the share weighted strength puts it in ignore.
+    from pii.classify import Band, classify_column
+    quarter = _sample(shapes={"AAA999999": 25, "AA-999999": 25,
+                              "999999999": 25, "A9999999999": 25})
+    below = sample.Thresholds(concentration=0.25)
+    signal, = sample_signals(quarter, below)
+    assert signal.weight < 0.35, signal.weight
+    p = ColumnProfile("probe.t", "ref", "VARCHAR", True, False, 100, 100, 100, 9.0)
+    p = p.with_sampled_signals((signal,))
+    assert classify_column(p, ARMS_WITH_SAMPLING).band is Band.IGNORE
+
+
+def check_the_floor_refuses_a_strength_that_could_never_reach_a_band():
+    try:
+        sample.concentration_floor(strength=0.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted a strength of zero")

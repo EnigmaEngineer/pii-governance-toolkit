@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple
 
+from pii import ablation, classify, sample
 from pii.rng import stream
 from pii.sample import luhn_ok
 from pii.schema import Column, PlantedColumn, Table
@@ -232,3 +233,134 @@ def counts(outcomes: Sequence[Outcome]) -> Dict[str, int]:
         out[o.verdict] += 1
     return out
 
+
+
+# The concentrations to sweep. 0.90 is the shipped value and 0.25 is the share each of the
+# four site formats holds in `site_patient_ref`, which is the column the arm misses. A sweep
+# that stops above 0.25 cannot reach the thing it is meant to answer.
+CONCENTRATIONS: Tuple[float, ...] = (
+    0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.00)
+
+
+@dataclass(frozen=True)
+class FixtureSweepRow:
+    """One concentration read against the four column fixture."""
+
+    concentration: float
+    signals: int
+    recovered: int
+    still_missed: int
+    false_alarms: int
+    unchanged: int
+    person_linked: bool
+
+    @property
+    def net(self) -> int:
+        """Columns the arm got right minus columns it got wrong, at this threshold.
+
+        A single number for a sweep row so a cliff is visible in one column of the table.
+        It is not a score and nothing is optimised against it. A recovered medical record
+        number and a false alarm on a trace id are not the same size of mistake and this
+        arithmetic says they are.
+        """
+        return self.recovered - self.false_alarms
+
+
+@dataclass(frozen=True)
+class WarehouseSweepRow:
+    """One concentration read against the shipped warehouse through the ablation harness."""
+
+    concentration: float
+    signals: int
+    found: int
+    masked: int
+    false_alarms: int
+    bands_moved: int
+
+
+def sweep_fixture(profiles: Sequence, samples: Sequence,
+                  concentrations: Sequence[float] = CONCENTRATIONS
+                  ) -> Tuple[FixtureSweepRow, ...]:
+    """Re-read the fixture at each concentration, with everything else held still.
+
+    The samples are taken once and reused. A shape count does not depend on the threshold,
+    so re-sampling per row would re-read the same values eleven times for no new
+    information, which is the opposite of what this module is careful about.
+    """
+    out: List[FixtureSweepRow] = []
+    for c in concentrations:
+        thresholds = sample.Thresholds(concentration=c)
+        with_samples = sample.attach(profiles, samples, thresholds)
+        before = classify.classify_warehouse(with_samples, arms=classify.ALL_ARMS)
+        after = classify.classify_warehouse(with_samples,
+                                            arms=classify.ARMS_WITH_SAMPLING)
+        tally = counts(grade(before, after, planted_key_for_bench))
+        out.append(FixtureSweepRow(
+            concentration=c,
+            signals=sum(1 for p in with_samples if p.sampled_signals),
+            recovered=tally["recovered"],
+            still_missed=tally["still missed"],
+            false_alarms=tally["false alarm"],
+            unchanged=tally["unchanged"],
+            person_linked=classify.table_is_person_linked(after),
+        ))
+    return tuple(out)
+
+
+def sweep_warehouse(profiles: Sequence, samples: Sequence, upstream_tables,
+                    scope, planted_key_for,
+                    concentrations: Sequence[float] = CONCENTRATIONS
+                    ) -> Tuple[WarehouseSweepRow, ...]:
+    """The same sweep against the shipped warehouse, through `pii.ablation`.
+
+    Through the committed harness rather than a second diff written here, for the reason
+    `scripts/sample_probe.py` gives. An arm set is an arm set and the ablation already
+    knows how to read two of them against a planted answer key.
+    """
+    arm_sets = (("declaration only", classify.ALL_ARMS),
+                ("with sampling", classify.ARMS_WITH_SAMPLING))
+    out: List[WarehouseSweepRow] = []
+    for c in concentrations:
+        thresholds = sample.Thresholds(concentration=c)
+        with_samples = sample.attach(profiles, samples, thresholds)
+        report = ablation.ablate(
+            with_samples,
+            upstream_tables=upstream_tables,
+            scope=scope,
+            planted_key_for=planted_key_for,
+            arm_sets=arm_sets,
+        )
+        reading = report.by_label("with sampling")
+        out.append(WarehouseSweepRow(
+            concentration=c,
+            signals=sum(1 for p in with_samples if p.sampled_signals),
+            found=reading.found,
+            masked=reading.masked,
+            false_alarms=reading.false_alarms,
+            bands_moved=reading.bands_moved,
+        ))
+    return tuple(out)
+
+
+def cliff(rows: Sequence) -> float:
+    """The highest concentration below the shipped one that reads differently.
+
+    Coming down from the shipped value, this is where something first changes. The first
+    version walked up from the bottom and returned the lowest value that differed, which is
+    0.20 on this sweep and says nothing, because 0.25 differs too and 0.20 is just the end
+    of the list. The cliff is the interesting edge and the end of the range is not.
+
+    Read off the sweep rather than typed beside it, which is the convention
+    `scripts/classify_probe.py` set for the band thresholds. Returns 0.0 when nothing below
+    the shipped value differs, and a caller printing that should say nothing moved rather
+    than print a threshold of zero.
+    """
+    shipped = [r for r in rows if r.concentration == sample.SHAPE_CONCENTRATION]
+    if not shipped:
+        return 0.0
+    baseline = shipped[0]
+    below = [r for r in rows if r.concentration < baseline.concentration]
+    for r in sorted(below, key=lambda x: -x.concentration):
+        if (r.signals, r.false_alarms) != (baseline.signals, baseline.false_alarms):
+            return r.concentration
+    return 0.0
