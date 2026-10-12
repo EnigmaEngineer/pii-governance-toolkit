@@ -256,3 +256,18 @@ def check_each_removal_set_is_every_arm_but_one():
     for arm in ALL_ARMS:
         kept = set(sets[ablation.REMOVAL_LABEL[arm]])
         assert kept == set(ALL_ARMS) - {arm}
+
+
+def check_the_no_answer_key_path_really_reports_zeros():
+    # `ablate`'s docstring says that without a scope and a planted key the in scope, found,
+    # masked and false alarm columns come back as zero. Nothing asserted it, and two mutants that
+    # turned a zero into a one survived both the standard library suite and the warehouse
+    # one on 2026-10-12. The claim is what the checks in this module rely on, since none of
+    # them has a planted warehouse to read.
+    report = ablate(_warehouse(), upstream_tables=_upstream())
+    for reading in report.readings:
+        assert reading.in_scope == 0, reading.label
+        assert reading.found == 0, reading.label
+        assert reading.masked == 0, reading.label
+        assert reading.false_alarms == 0, reading.label
+    assert report.readings[0].bands_moved == 0

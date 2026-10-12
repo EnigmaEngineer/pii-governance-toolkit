@@ -774,3 +774,16 @@ def check_two_readings_of_one_fact_needs_both_thresholds():
     assert not classify.two_readings_of_one_fact("person_name", "birth_date")
     assert not classify.two_readings_of_one_fact("person_name", "email")
     assert classify.two_readings_of_one_fact("birth_date", "event_date")
+
+
+def check_coverage_is_immutable():
+    # Pre-existing and found by today's mutation pass rather than by today's change. A
+    # `frozen=False` flip on `Coverage` survived 617 checks, because `rule_coverage` builds
+    # them and nothing ever tried to write to one. The three booleans are a derived answer
+    # and a caller that can rewrite one can rewrite the answer.
+    cov = list(classify.rule_coverage().values())[0]
+    try:
+        cov.by_name = True
+    except Exception:
+        return
+    raise AssertionError("Coverage let a field be rewritten")
