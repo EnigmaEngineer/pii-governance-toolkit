@@ -573,21 +573,58 @@ def table_is_person_linked(results: Sequence[Classification],
     )
 
 
+def attenuate_temporal(signals: Tuple[Signal, ...], factor: float) -> Tuple[Signal, ...]:
+    """Every temporal signal at `factor` of its strength, everything else untouched.
+
+    Only the temporal signals move because they are the only ones the second pass was ever
+    going to delete. A mart column named `postal_code` says postal code at whatever grain
+    the table was grouped to, so discounting it would charge the name arm for the GROUP BY.
+
+    The discount lands on `strength` rather than on `support`. `support` means the share of
+    the column an arm got to read, and the arm here read the whole column. What is partial
+    is the claim, not the observation.
+
+    The factor goes into the detail string because a reviewer working the queue has to be
+    able to see where a 0.4319 came from, and `0.45 times 0.9598` is the explanation.
+    """
+    if not 0.0 <= factor <= 1.0:
+        raise ValueError("a grain confidence of {} is not a share".format(factor))
+    out = []
+    for s in signals:
+        if s.category_key != "event_date":
+            out.append(s)
+            continue
+        out.append(replace(
+            s,
+            strength=s.strength * factor,
+            detail="{}, discounted to {:.4f} of it because {:.4f} of this table's rows "
+                   "stand for one person".format(s.detail, factor, factor),
+        ))
+    return tuple(out)
+
+
 def classify_table(profiles: Sequence[ColumnProfile],
                    evidence_bar: float = REVIEW_AT,
                    person_linked: Optional[bool] = None,
-                   arms: Sequence[Arm] = ALL_ARMS) -> Tuple[Classification, ...]:
+                   arms: Sequence[Arm] = ALL_ARMS,
+                   grain_confidence: Optional[float] = None) -> Tuple[Classification, ...]:
     """Two passes. Columns alone, then the temporal ones again with the table in view.
 
-    The second pass only ever removes evidence. A temporal signal in a table that names
-    nobody is dropped, and nothing is added anywhere, so a column this function flags is a
-    column `classify_column` flagged too.
+    The second pass only ever removes or discounts evidence. Nothing is added anywhere, so
+    a column this function flags is a column `classify_column` flagged too.
 
     `person_linked` overrides the verdict the columns would give. `None` works it out from
     the columns, which is what a caller holding one table should pass. A caller that can
     see where the table came from passes the answer in, because a mart whose grouping keys
     came out of a table full of patients is about those patients and none of its own
     columns says so. See `classify_warehouse`.
+
+    `grain_confidence` is how much of that borrowed verdict reaches the columns. It is the
+    share of rows standing for one person, measured by `pii/grain.py`. `None` keeps the
+    temporal evidence whole, which is right for a table whose own columns name people and
+    is what every caller got before 2026-10-12. A number discounts it, which gives the
+    rescue three outcomes rather than two: the evidence is deleted, kept whole, or kept
+    scaled by how much of the table is a person.
     """
     if not profiles:
         return ()
@@ -599,8 +636,13 @@ def classify_table(profiles: Sequence[ColumnProfile],
     first = tuple(classify_column(p, arms) for p in profiles)
     linked = (table_is_person_linked(first, evidence_bar)
               if person_linked is None else person_linked)
-    if linked:
+    if linked and grain_confidence is None:
         return first
+    if linked:
+        return tuple(
+            _decide(profile, attenuate_temporal(result.signals, grain_confidence))
+            for profile, result in zip(profiles, first)
+        )
 
     out: List[Classification] = []
     for profile, result in zip(profiles, first):
@@ -618,6 +660,7 @@ def classify_warehouse(
     evidence_bar: float = REVIEW_AT,
     upstream_tables: Optional[Dict[str, Sequence[str]]] = None,
     arms: Sequence[Arm] = ALL_ARMS,
+    grain_confidence: Optional[Dict[str, float]] = None,
 ) -> Tuple[Classification, ...]:
     """Every column, grouped by table so the second pass has something to read.
 
@@ -642,6 +685,14 @@ def classify_warehouse(
     The ordering problem is why this is two rounds rather than a walk. The upstream table
     sorts after the downstream one here, `analytics` before `raw`, so a single pass in name
     order asks about a verdict it has not reached yet.
+
+    `grain_confidence` closes the gap the paragraph above describes. Build it with
+    `grain.confidence_map`, which measures how many people one row of each table stands
+    for. A rescued table's temporal evidence is then scaled by that share instead of
+    restored whole. Left out, round two behaves exactly as it did before 2026-10-12, which
+    is the binary this docstring used to defend. The discount reaches only the tables round
+    two rescues. A table naming people in its own columns is unaffected, because nothing
+    about it was borrowed.
     """
     grouped: Dict[str, List[ColumnProfile]] = {}
     for p in profiles:
@@ -662,8 +713,10 @@ def classify_warehouse(
             continue
         sources = upstream_tables.get(table, ())
         if any(linked.get(s, False) for s in sources):
+            discount = None if grain_confidence is None else grain_confidence.get(table)
             out.extend(classify_table(grouped[table], evidence_bar,
-                                      person_linked=True, arms=arms))
+                                      person_linked=True, arms=arms,
+                                      grain_confidence=discount))
         else:
             out.extend(first[table])
     return tuple(out)
