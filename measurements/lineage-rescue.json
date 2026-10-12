@@ -1,0 +1,45 @@
+{
+  "floor": 0.777778,
+  "k_separates_the_bands": false,
+  "review_at": 0.35,
+  "share_separates_the_bands": true,
+  "tables": [
+    {
+      "band": "review",
+      "binary_band": "review",
+      "binary_confidence": 0.45,
+      "confidence": 0.4319,
+      "k_anonymity": 1,
+      "population": 1504,
+      "rows": 1444,
+      "singleton_rows": 1386,
+      "singleton_share": 0.959834,
+      "table": "analytics.encounter_daily"
+    },
+    {
+      "band": "ignore",
+      "binary_band": "review",
+      "binary_confidence": 0.45,
+      "confidence": 0.2361,
+      "k_anonymity": 1,
+      "population": 1504,
+      "rows": 894,
+      "singleton_rows": 469,
+      "singleton_share": 0.524609,
+      "table": "analytics.encounter_day_dept"
+    },
+    {
+      "band": "ignore",
+      "binary_band": "review",
+      "binary_confidence": 0.45,
+      "confidence": 0.0,
+      "k_anonymity": 2,
+      "population": 1504,
+      "rows": 53,
+      "singleton_rows": 0,
+      "singleton_share": 0.0,
+      "table": "analytics.encounter_month_dept"
+    }
+  ],
+  "temporal_strength": 0.45
+}
