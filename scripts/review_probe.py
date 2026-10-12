@@ -20,7 +20,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pii import classify, crawl, lineage, mask, profile, review, schema  # noqa: E402
+from pii import (classify, crawl, grain, lineage, mask, profile, review,  # noqa: E402
+                 schema)
 from pii.review import Decision  # noqa: E402
 
 RULE = "-" * 96
@@ -120,13 +121,16 @@ def main():
         crawled = crawl.crawl(con)
         profiles = profile.profile_crawl(con, crawled)
         graph = build_graph(con)
-        upstream = graph.upstream_table_map(sorted({p.table for p in profiles}))
-        results = classify.classify_warehouse(profiles, upstream_tables=upstream)
+        results = grain.classify_shipped(con, profiles, graph)
         policies = mask.generate(results)
         queue = review.build(results, policies, graph)
 
+        # The reporting map, which is not the classifying one. This names which tables
+        # round two rescued and it has to read a classification taken WITHOUT the graph,
+        # so it cannot share the map `classify_shipped` built internally.
         rescued = classify.person_linked_by_derivation(
-            classify.classify_warehouse(profiles), upstream)
+            classify.classify_warehouse(profiles),
+            graph.upstream_table_map(sorted({p.table for p in profiles})))
         print("queue of {} over {} columns".format(len(queue), len(results)))
         print("band counts {}".format(classify.band_counts(results)))
         print("rescued by lineage: {}".format(", ".join(rescued) or "none"))

@@ -197,12 +197,14 @@ def ablate(
     scope: Optional[FrozenSet[str]] = None,
     planted_key_for: Optional[Callable[[Classification], str]] = None,
     arm_sets: Sequence[Tuple[str, Tuple[Arm, ...]]] = ARM_SETS,
+    grain_confidence: Optional[Dict[str, float]] = None,
 ) -> Report:
     """Run every arm set over the same profiles and diff the bands against all three arms.
 
-    `upstream_tables` is passed through unchanged, so the ablation runs the configuration
-    the tool actually ships rather than the single round version. A section that classified
-    directly would publish a figure from a tool nobody has.
+    `upstream_tables` and `grain_confidence` are both passed through unchanged, so the
+    ablation runs the configuration the tool actually ships rather than the single round
+    version. A section that classified directly would publish a figure from a tool nobody
+    has.
 
     `scope` and `planted_key_for` are the answer keys and both are optional. Without them
     the found, masked and false alarm columns come back as zero and the moves are still
@@ -212,12 +214,14 @@ def ablate(
     baseline_arms = arm_sets[0][1]
     baseline = {
         r.address: r for r in classify_warehouse(
-            profiles, evidence_bar, upstream_tables, arms=baseline_arms)
+            profiles, evidence_bar, upstream_tables, arms=baseline_arms,
+            grain_confidence=grain_confidence)
     }
 
     readings: List[Reading] = []
     for label, arms in arm_sets:
-        results = classify_warehouse(profiles, evidence_bar, upstream_tables, arms=arms)
+        results = classify_warehouse(profiles, evidence_bar, upstream_tables, arms=arms,
+                                     grain_confidence=grain_confidence)
 
         moves: List[Move] = []
         for r in results:

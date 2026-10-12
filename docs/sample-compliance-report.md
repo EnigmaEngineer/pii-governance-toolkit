@@ -32,7 +32,7 @@ review       10
 
 Refused, 10 of them:
 
-- `analytics.encounter_daily.day` is this column personal data? it scored 0.4500, which is inside the band where the tool declined to decide. Closes when a reviewer answers it in the queue.
+- `analytics.encounter_daily.day` is this column personal data? it scored 0.4319, which is inside the band where the tool declined to decide. Closes when a reviewer answers it in the queue.
 - `raw.claim.member_number` is this column personal data? it scored 0.7000, which is inside the band where the tool declined to decide. Closes when a reviewer answers it in the queue.
 - `raw.claim.payer_name` is this column personal data? it scored 0.4000, which is inside the band where the tool declined to decide. Closes when a reviewer answers it in the queue.
 - `raw.claim.submitted_on` is this column personal data? it scored 0.7250, which is inside the band where the tool declined to decide. Closes when a reviewer answers it in the queue.

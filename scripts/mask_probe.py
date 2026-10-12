@@ -23,7 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pii import classify, crawl, lineage, mask, profile, schema  # noqa: E402
+from pii import crawl, grain, lineage, mask, profile, schema  # noqa: E402
 from pii.schema import PLANTED  # noqa: E402
 from pii.taxonomy import TAXONOMY, Identifiability  # noqa: E402
 
@@ -208,8 +208,7 @@ def main():
             schema.DERIVED_SQL["analytics.encounter_daily"], cols).merge(
                 lineage.Graph(edges=lineage.foreign_key_edges(
                     con, crawl.ENGINE_SCHEMAS)))
-        upstream = graph.upstream_table_map(sorted({p.table for p in profiles}))
-        results = classify.classify_warehouse(profiles, upstream_tables=upstream)
+        results = grain.classify_shipped(con, profiles, graph)
         policies = mask.generate(results)
 
         print("policy over {} columns, taxonomy {}".format(

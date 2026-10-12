@@ -22,7 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pii import (access, classify, compliance, corpus, coverage, crawl,  # noqa: E402
+from pii import (access, compliance, corpus, coverage, crawl, grain,  # noqa: E402
                  lineage, mask, profile, schema)
 
 COMMAND = "python3 scripts/compliance_report.py --db /tmp/pii.duckdb"
@@ -53,8 +53,7 @@ def main():
         crawled = crawl.crawl(con)
         profiles = profile.profile_crawl(con, crawled)
         graph = build_graph(con)
-        upstream = graph.upstream_table_map(sorted({p.table for p in profiles}))
-        results = classify.classify_warehouse(profiles, upstream_tables=upstream)
+        results = grain.classify_shipped(con, profiles, graph)
         policies = mask.generate(results)
 
         grants, members, events = corpus.generate_access(n_queries=args.queries)

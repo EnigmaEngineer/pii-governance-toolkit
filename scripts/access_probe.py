@@ -24,7 +24,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pii import access, classify, corpus, crawl, lineage, profile, schema  # noqa: E402
+from pii import (access, corpus, crawl, grain, lineage, profile,  # noqa: E402
+                 schema)
 
 RULE = "-" * 96
 
@@ -147,8 +148,7 @@ def main():
         crawled = crawl.crawl(con)
         profiles = profile.profile_crawl(con, crawled)
         graph = build_graph(con)
-        upstream = graph.upstream_table_map(sorted({p.table for p in profiles}))
-        results = classify.classify_warehouse(profiles, upstream_tables=upstream)
+        results = grain.classify_shipped(con, profiles, graph)
         grants, members, events = corpus.generate_access(n_queries=args.queries)
 
         summary = corpus.summarise_access(grants, members, events)

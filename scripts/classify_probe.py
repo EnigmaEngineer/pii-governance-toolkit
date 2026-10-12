@@ -44,8 +44,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pii.classify as classify  # noqa: E402
-from pii import (ablation, classify, coverage, crawl, lineage, naive, profile,  # noqa: E402
-                 safeharbor)
+from pii import (ablation, classify, coverage, crawl, grain, lineage, naive,  # noqa: E402
+                 profile, safeharbor)
 from pii.corpus import generate  # noqa: E402
 from pii import schema  # noqa: E402
 from pii.schema import PLANTED, TABLES, planted_index  # noqa: E402
@@ -76,6 +76,9 @@ def connect(path: str, read_only: bool = True):
 # alternative was nine signature changes to pass one thing that never varies within a run.
 UPSTREAM = None
 
+# The grain each rescued table is discounted by, set beside it and for the same reason.
+GRAIN = None
+
 
 def classify_all(profiles, **kw):
     """Every section classifies through here, so no section can drift off the graph.
@@ -84,7 +87,8 @@ def classify_all(profiles, **kw):
     second round existed, a section that kept calling it directly would publish a recall
     figure from a configuration the tool does not ship.
     """
-    return classify.classify_warehouse(profiles, upstream_tables=UPSTREAM, **kw)
+    return classify.classify_warehouse(profiles, upstream_tables=UPSTREAM,
+                                       grain_confidence=GRAIN, **kw)
 
 
 def upstream_for(con, profiles):
@@ -96,11 +100,33 @@ def upstream_for(con, profiles):
     return graph.upstream_table_map(sorted({p.table for p in profiles}))
 
 
-def classified(con):
-    global UPSTREAM
+def grain_for(con, profiles):
+    """How many people one row of each table stands for, which the rescue is scaled by.
+
+    A sibling of `upstream_for` rather than part of it, because the upstream map is read
+    off the catalog and this is read off the data. Two reads, two functions.
+    """
+    graph = lineage.warehouse_graph(con)
+    return grain.confidence_map(con, graph, sorted({p.table for p in profiles}))
+
+
+def classified(con, with_grain=True):
+    """Profile and classify one database, setting the two module level bindings.
+
+    `with_grain` is False for the obfuscated arm only. That arm rebuilds the warehouse with
+    every column renamed to a position label and the lineage graph is still in the original
+    names, so the group size column the graph names does not exist in that database and the
+    grain cannot be measured at all. It is also not needed: the discount can only lower a
+    rescued temporal score and `day` is in the review band at both 0.4500 and 0.4319, so no
+    band in either arm moves either way. Stated here rather than assumed, because a
+    comparison where one side is discounted and the other is not would be the interaction
+    the lineage section already warns about.
+    """
+    global UPSTREAM, GRAIN
     crawled = crawl.crawl(con)
     profiles = profile.profile_crawl(con, crawled)
     UPSTREAM = upstream_for(con, profiles)
+    GRAIN = grain_for(con, profiles) if with_grain else None
     return profiles, classify_all(profiles)
 
 
@@ -235,6 +261,7 @@ def ablation_report(profiles, key_for):
         upstream_tables=UPSTREAM,
         scope=scope_keys(),
         planted_key_for=key_for,
+        grain_confidence=GRAIN,
     )
 
 
@@ -344,7 +371,7 @@ def section_obfuscated(args, key_for):
     mapping = obfuscated_db(args.db, target)
     con = connect(target)
     try:
-        _profiles, results = classified(con)
+        _profiles, results = classified(con, with_grain=False)
     finally:
         con.close()
     idx = planted_index()

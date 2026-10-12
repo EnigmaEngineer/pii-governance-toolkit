@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pii import ablation, corpus, crawl, profile, safeharbor  # noqa: E402
 from pii.schema import planted_index  # noqa: E402
-from scripts.classify_probe import upstream_for  # noqa: E402
+from scripts.classify_probe import grain_for, upstream_for  # noqa: E402
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(HERE, "measurements", "arm-ablation.json")
@@ -70,6 +70,7 @@ def _report():
             upstream_tables=upstream,
             scope=frozenset(safeharbor.mapped_keys()),
             planted_key_for=lambda r: idx[(r.table, r.column)].category_key,
+            grain_confidence=grain_for(con, profiles),
         )
     finally:
         con.close()
