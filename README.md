@@ -612,8 +612,8 @@ Queue any column in Safe Harbor scope regardless of its band. That grades the to
 my own planted answer key at runtime, which makes every figure downstream circular.
 
 Feed a k measurement on the grain into the confidence so the column earns its score. That
-is the deeper answer and it is a redesign of the band logic, and it needs a measurement
-nothing takes at classify time.
+is the deeper answer. It was built on 2026-10-12 and it is the section after this one, and
+the k turned out to be the wrong statistic.
 
 The third option was in a docstring the whole time. `table_is_person_linked` asks whether
 anything in a table names a person outright, and its own comment already said the honest
@@ -632,11 +632,11 @@ band counts {'accept': 15, 'review': 10, 'ignore': 17}
 rescued by lineage: analytics.encounter_daily
 ```
 
-One column moved. `day` scores 0.4500, which is the review band, so a person decides. That
-is the right end state and not a consolation: nothing in the catalog says whether a group
-of one survived the `GROUP BY`, so the tool asks rather than answers. The whole of its
-evidence is that the catalog type is DATE, and what makes the question answerable for a
-reviewer is the lineage trace printed beside it.
+One column moved. `day` scores 0.4319, which is the review band, so a person decides. The
+undiscounted rescue scored it 0.4500 and the next section is what took the two hundredths
+off. The catalog alone does not say whether a group of one survived the `GROUP BY`, so the
+tool asks rather than answers, and what makes the question answerable for a reviewer is the
+lineage trace printed beside it.
 
 The closure is value preserving only. A `GROUP BY` key is value preserving and that is the
 case that matters here. An aggregate is not, so a mart built only out of counts does not
@@ -662,6 +662,97 @@ measures what propagation adds on top of a column's own answer, and a column's o
 can now be lineage informed. So that section deliberately classifies without the graph. A
 comparison that passed the graph to both sides would be measuring a lineage informed answer
 against a lineage informed answer and calling the difference the value of lineage.
+
+## The rescue was a necessary condition spending a sufficient one
+
+Round two above keeps a mart's temporal evidence when the tables it came from name people.
+Being built out of a table full of patients is a necessary condition for a mart date to be
+one patient's date. It is not a sufficient one, and until 2026-10-12 the code treated it as
+one. Every derived table got the same 0.4500, whatever its `GROUP BY` had done.
+
+That was defensible on this warehouse and only on this warehouse. 1,386 of 1,444 mart rows
+are a group of one, so the day really is one person's admission. Group the same encounters
+to a month and a department and no row is anybody, and the rescue would have queued the
+column anyway on the strength of its parentage.
+
+**So the condition is scored now, and the score is a measurement.** `pii/grain.py` sends
+one statement per table and gets four integers back. The row count, the number of people
+those rows cover, the minimum group size and the number of rows standing for exactly one
+person. No value from a user column crosses the
+boundary, which is the same guarantee the profiler keeps. The share of rows standing for
+one person multiplies the temporal signal's strength, so a rescued column earns a number
+rather than inheriting one.
+
+The group size column comes off the lineage graph. `mask.weight_for` finds it by looking
+for an `AGGREGATE` edge whose source is a literal `*`, and it refuses rather than guesses
+when a table offers two candidates. Measuring the mart by row count instead reports a
+share of 1.0000 against the real 0.9598, which is the failure that discriminator exists to
+stop.
+
+### k was the statistic the thread asked for and it cannot do the job
+
+`ot-084` asked for a k on the grain. k is `min` over every group in the table, so one group
+of one holds it at 1 and the other fourteen hundred stop counting. To show that, the same
+encounters were regrouped twice and the whole path run again. The lineage read, then the
+weight column lookup, then the grain and the classifier. Nothing was told the answer.
+
+```
+table                             rows    k    share  scored band      binary band
+analytics.encounter_daily         1444    1   0.9598  0.4319 review    0.4500 review
+analytics.encounter_day_dept       894    1   0.5246  0.2361 ignore    0.4500 review
+analytics.encounter_month_dept      53    2   0.0000  0.0000 ignore    0.4500 review
+
+k tells the bands apart              NO
+the singleton share tells them apart yes
+```
+
+The first two tables share a k of 1 and end in different bands. A rule reading k would have
+kept the binary it was meant to replace, and it would have looked like a measurement while
+doing it. The share has resolution because it reads the whole distribution instead of its
+worst point.
+
+The binary rescued all three at 0.4500. Two of the three should never have been rescued and
+nothing in the old code could tell.
+
+### The discount puts a floor under the rescue, and the floor is 0.7778
+
+The review band opens at 0.3500 and the structure arm's temporal rule is worth 0.4500, so a
+rescued column queues only when more than 0.7778 of the table's rows stand for one person.
+`grain.rescue_floor` derives that from the two constants and two checks pin it, one against
+the constants and one that builds a share just under the floor and asserts the ignore band.
+
+This was derived rather than swept, and day 3 of this project is the reason. A threshold
+was swept there across eleven settings and could not move a verdict at any of them, because
+the same multiply had put a floor under it that nobody had worked out first.
+
+The floor has a consequence worth stating plainly. A mart where 0.5246 of rows are one
+patient lands in ignore. More than half its rows are a person and the tool says nothing.
+That is not the discount being wrong, it is 0.4500 being a weak signal that cannot survive
+a 22 percent haircut, and the honest reading is that the structure arm alone was never
+enough to carry a column on its own.
+
+### Why this is not a wrapper around the k that was already here
+
+`pii/mask.py` measures k over a masked grain and it refuses to run while any quasi
+identifier of the table sits in the review band. The column this measurement exists to
+decide is the one in the review band. Run it and the refusal names
+`analytics.encounter_daily.day` by address, so the downstream measurement cannot inform the
+upstream decision. A check asserts that refusal still happens, because a refusal that
+quietly stopped firing would make this whole module redundant with nothing failing.
+
+```
+python3 scripts/grain_probe.py --db /tmp/pii.duckdb
+```
+
+The probe copies the database before it builds anything, so the warehouse it was pointed at
+is left as it was found. That is not politeness. Two extra tables left behind change the 42
+column figure every other section here publishes, which is how the first run of this probe
+produced a compliance report with 62 questions in it instead of 58.
+
+`grain.classify_shipped` is the one place the graph, the upstream map and the grain now come
+together. Six call sites used to build the upstream map from the same profiles and agree by
+luck, and adding a third thing every one of them needed is what would have made a seventh
+copy inevitable.
 
 ## The policy is the easy half
 
@@ -1386,8 +1477,8 @@ fixture in `probe.outside_rule`.
 ## Running the checks
 
 ```
-python3 tests/run_all.py            578 checks, standard library only
-python3 tests/run_with_duckdb.py    673 checks, needs the driver
+python3 tests/run_all.py            619 checks, standard library only
+python3 tests/run_with_duckdb.py    725 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -1561,14 +1652,22 @@ a pass was valid against a stale cache. Redone from a copy that nothing had ever
 
 ## Known limitations
 
-**Nothing measures whether the grain deduplicated a person away, so the tool asks.**
-`analytics.encounter_daily.day` is in Safe Harbor scope and it reaches a reviewer now
-rather than nothing, which is the fix. What it still does not do is decide. Whether a mart
-date is one person's admission or a reporting grain turns on the group size, and no k is
-measured at classify time. `pii/mask.py` computes a k over a masked grain and
-`pii/reidentify.py` computes one over rows, so the measurement exists in the repo and
-nothing upstream of the bands consumes it. Feeding it in is the version where the column
-earns a score instead of a question.
+**Closed in v2. The grain is measured at classify time now.** `pii/grain.py` sends one
+statement per table and the share of rows standing for one person scales the rescued
+temporal signal. `analytics.encounter_daily.day` scores 0.4319 rather than 0.4500 and the
+same mart regrouped to a month and a department falls out of the review band entirely. The
+tool still does not decide for the reviewer, and that part was never the limitation.
+
+**The floor the discount creates was not chosen by anybody.** It is 0.7778, which is the
+review band divided by the temporal rule's strength. A mart where half the rows are one
+patient is ignored on that arithmetic. Raising the temporal strength would lower the floor
+and would also move every date column in the warehouse, so the two cannot be tuned apart
+while the discount is a multiply.
+
+**The two coarse marts are mine.** They are regroupings of the same generated encounters,
+so the shares they produce are facts about `pii/corpus.py`. Two things in that section are
+not about the corpus. The floor falls out of two constants. The finding that k cannot
+separate the bands is a property of `min`.
 
 **The access report answers over a window and the window changes the answer.** There is no
 policy application date anywhere in it, so it cannot answer the question an auditor
