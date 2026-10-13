@@ -42,7 +42,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from pii.taxonomy import TAXONOMY, Identifiability, granularity_family
 
@@ -634,6 +634,44 @@ def classify_table(profiles: Sequence[ColumnProfile],
             "classify_table takes one table at a time, got {}".format(sorted(tables)))
 
     first = tuple(classify_column(p, arms) for p in profiles)
+    return settle_table(profiles, first, evidence_bar, person_linked, grain_confidence)
+
+
+def settle_table(profiles: Sequence[ColumnProfile],
+                 first: Sequence[Classification],
+                 evidence_bar: float = REVIEW_AT,
+                 person_linked: Optional[bool] = None,
+                 grain_confidence: Optional[float] = None) -> Tuple[Classification, ...]:
+    """The second pass on its own, over signals somebody else already computed.
+
+    `classify_table` computes round one and then calls this. A caller that already holds
+    round one calls this directly and the arms never run again, which is the whole point of
+    it being a separate function. `classify_warehouse` is that caller. Round two used to
+    re-run `classify_column` on every column of a rescued table and throw the first result
+    away, so the arms ran twice over the same profiles for no new evidence. `ot-085` asked
+    what that costs and `pii/roundtwo.py` is the answer.
+
+    Nothing here reads a `ColumnProfile` except to address the result, so the signals are
+    the input and the profiles are only along for the table and column names. That is why
+    this is safe to feed a cached round one: there is no path by which a stale profile and
+    a fresh signal set could disagree.
+
+    The two sequences are positional and that is a real constraint. `first[i]` has to be
+    the result for `profiles[i]`. A check asserts the addresses line up rather than
+    trusting the caller, because the failure if they do not is a confidence landing on the
+    wrong column, which is silent and wrong rather than loud and wrong.
+    """
+    if len(profiles) != len(first):
+        raise ValueError(
+            "settle_table got {} profiles and {} round one results".format(
+                len(profiles), len(first)))
+    for profile, result in zip(profiles, first):
+        if profile.table != result.table or profile.column != result.column:
+            raise ValueError(
+                "round one result {} does not belong to profile {}.{}".format(
+                    result.address, profile.table, profile.column))
+
+    first = tuple(first)
     linked = (table_is_person_linked(first, evidence_bar)
               if person_linked is None else person_linked)
     if linked and grain_confidence is None:
@@ -655,12 +693,43 @@ def classify_table(profiles: Sequence[ColumnProfile],
     return tuple(out)
 
 
+# A caller either already holds the grain confidences or holds a way to measure them. The
+# dict is the first case and it is what a check or a sweep passes. The callable is the
+# second, and it exists because measuring a table's grain costs database statements and
+# round two rescues a handful of tables out of however many the warehouse has. Handed a
+# callable, `classify_warehouse` works out which tables it is going to rescue and asks for
+# those. See `ot-138` for what the eager version cost.
+GrainConfidence = Union[Mapping[str, float],
+                        Callable[[Tuple[str, ...]], Mapping[str, float]]]
+
+
+def _resolve_grain(grain_confidence: Optional[GrainConfidence],
+                   rescued: Tuple[str, ...]) -> Mapping[str, float]:
+    """The confidences for the tables round two is about to rescue, and nothing else.
+
+    A dict is read as it is. Anything callable is called once with the rescued tables,
+    which is one call and not one per table, because a caller measuring a database wants to
+    decide for itself whether that is one statement or several.
+    """
+    if grain_confidence is None:
+        return {}
+    if callable(grain_confidence):
+        measured = grain_confidence(rescued)
+        missing = tuple(t for t in rescued if t not in measured)
+        if missing:
+            raise ValueError(
+                "the grain source was asked about {} tables and did not answer for "
+                "{}".format(len(rescued), ", ".join(missing)))
+        return measured
+    return grain_confidence
+
+
 def classify_warehouse(
     profiles: Sequence[ColumnProfile],
     evidence_bar: float = REVIEW_AT,
     upstream_tables: Optional[Dict[str, Sequence[str]]] = None,
     arms: Sequence[Arm] = ALL_ARMS,
-    grain_confidence: Optional[Dict[str, float]] = None,
+    grain_confidence: Optional[GrainConfidence] = None,
 ) -> Tuple[Classification, ...]:
     """Every column, grouped by table so the second pass has something to read.
 
@@ -698,25 +767,37 @@ def classify_warehouse(
     for p in profiles:
         grouped.setdefault(p.table, []).append(p)
 
+    # Two things per table and the distinction is the whole memoisation. `alone` is every
+    # column on its own evidence, which is what the arms produce and the only expensive
+    # part. `first` is round one's verdict, which is `alone` settled with no table context.
+    # Round two needs `alone` and not `first`, because `first` has already had the temporal
+    # evidence deleted and a rescue reading it would find nothing to rescue. Keeping only
+    # `first` is the bug this comment exists to stop somebody reintroducing.
+    alone: Dict[str, Tuple[Classification, ...]] = {}
     first: Dict[str, Tuple[Classification, ...]] = {}
     for table in sorted(grouped):
-        first[table] = classify_table(grouped[table], evidence_bar, arms=arms)
+        alone[table] = tuple(classify_column(p, arms) for p in grouped[table])
+        first[table] = settle_table(grouped[table], alone[table], evidence_bar)
 
     if upstream_tables is None:
         return tuple(r for table in sorted(first) for r in first[table])
 
     linked = {t: table_is_person_linked(rs, evidence_bar) for t, rs in first.items()}
+    rescued = tuple(
+        t for t in sorted(grouped)
+        if not linked[t] and any(linked.get(s, False) for s in upstream_tables.get(t, ()))
+    )
+    confidences = _resolve_grain(grain_confidence, rescued)
+
     out: List[Classification] = []
     for table in sorted(grouped):
-        if linked[table]:
-            out.extend(first[table])
-            continue
-        sources = upstream_tables.get(table, ())
-        if any(linked.get(s, False) for s in sources):
-            discount = None if grain_confidence is None else grain_confidence.get(table)
-            out.extend(classify_table(grouped[table], evidence_bar,
-                                      person_linked=True, arms=arms,
-                                      grain_confidence=discount))
+        if table in rescued:
+            # Round two re-decides from round one's signals rather than asking the arms
+            # again. The arms are pure in the profile, so a second run returns what is
+            # already in `first[table]`.
+            out.extend(settle_table(grouped[table], alone[table], evidence_bar,
+                                    person_linked=True,
+                                    grain_confidence=confidences.get(table)))
         else:
             out.extend(first[table])
     return tuple(out)
