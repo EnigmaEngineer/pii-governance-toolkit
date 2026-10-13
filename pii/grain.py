@@ -396,6 +396,13 @@ def classify_shipped(con,
     and left the map itself copied around. Adding a third thing every caller needs is what
     makes a seventh copy inevitable, so this is the one place it happens now.
 
+    The grain goes in as a function rather than as a measured map, and that is `ot-138`.
+    Measuring a table's grain costs statements and round two rescues the derived tables
+    that named nobody, which is three of five here and will be a handful of however many a
+    real warehouse has. Handed the function, `classify_warehouse` works out that set from
+    round one and asks about it. Handed a map it would have had to be built for every
+    table first, which is what this did until today.
+
     A caller wanting the undiscounted rescue, or an arm set other than the shipped three,
     calls `classify.classify_warehouse` directly. That is still how `pii/ablation.py` runs
     an arm set and how `scripts/lineage_probe.py` measures what propagation adds, and both
@@ -413,5 +420,5 @@ def classify_shipped(con,
         evidence_bar,
         graph.upstream_table_map(tables),
         classify.ALL_ARMS,
-        confidence_map(con, graph, tables),
+        lambda rescued: confidence_map(con, graph, rescued),
     )
