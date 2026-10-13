@@ -787,3 +787,27 @@ def check_coverage_is_immutable():
     except Exception:
         return
     raise AssertionError("Coverage let a field be rewritten")
+
+
+def check_a_multi_token_column_name_still_matches_the_name_arm():
+    # Pre-existing and found by a mutation pass rather than by the day's change. Turning
+    # the `or` in the token match into an `and` survived the whole suite. Under that mutant
+    # a needle has to be both one token and the whole joined name, so every single word
+    # column still matched and every multi word one stopped matching. Nothing in the suite
+    # had ever asserted a multi word name.
+    #
+    # This is the arm the day 1 ablation found decides everything on this warehouse, so an
+    # ungraded path through its matcher is worth more than the mutant that found it.
+    cases = {
+        "patient_name": "person_name",
+        "home_address": "street_address",
+        "date_of_birth": "birth_date",
+        "phone_number": "phone",
+    }
+    for column, want_key in cases.items():
+        tokens = classify.tokenise(column)
+        assert len(tokens) > 1, (column, tokens)
+        keys = {s.category_key for s in classify.name_signals(column)}
+        assert want_key in keys, (
+            "{} tokenises to {} and the name arm returned {}, which means a multi token "
+            "name no longer reaches TOKEN_RULES".format(column, tokens, sorted(keys)))
