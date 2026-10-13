@@ -20,6 +20,7 @@ mutation reaches. This file drives, prints and controls.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -189,11 +190,34 @@ def section_controls(con) -> int:
     return bad
 
 
+def manifest(shipped: dict, grain_rows: list, double_rows: list) -> dict:
+    """The figures a README is allowed to quote, and no wall times.
+
+    Every other measurement in this repo commits a manifest and a check re-derives it.
+    This one did not until the audit found a timing range in the README that nothing could
+    reproduce.
+
+    Wall times are left out on purpose. A committed number has to re-derive on another
+    machine and a millisecond does not, which is the whole reason the call counts are the
+    published figures here. The arm runs and the statement counts are properties of the
+    algorithm and they come back identical anywhere.
+    """
+    return {
+        "shipped": {k: v for k, v in shipped.items() if k != "rescued"},
+        "shipped_rescued": sorted(shipped["rescued"]),
+        "grain_curve": grain_rows,
+        "double_pass": [{k: v for k, v in r.items() if not k.endswith("_ms")}
+                        for r in double_rows],
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="/tmp/pii.duckdb")
     ap.add_argument("--bench-db", default="/tmp/pii-roundtwo.duckdb")
     ap.add_argument("--passes", type=int, default=5)
+    ap.add_argument("--manifest", default=None,
+                    help="write the machine independent figures here as JSON")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -201,14 +225,22 @@ def main() -> int:
         return 2
 
     con = connect(args.db, read_only=True)
-    section_shipped(con)
+    shipped = section_shipped(con)
 
     if os.path.exists(args.bench_db):
         os.remove(args.bench_db)
     bench = connect(args.bench_db)
-    section_grain_curve(bench)
-    section_double_pass(args.passes)
+    grain_rows = section_grain_curve(bench)
+    double_rows = section_double_pass(args.passes)
     bad = section_controls(con)
+
+    if args.manifest:
+        with open(args.manifest, "w", encoding="utf-8") as fh:
+            json.dump(manifest(shipped, grain_rows, double_rows), fh,
+                      indent=2, sort_keys=True)
+            fh.write("\n")
+        print("\nwrote {}".format(args.manifest))
+
     return 1 if bad else 0
 
 

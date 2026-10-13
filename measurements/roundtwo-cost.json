@@ -1,0 +1,65 @@
+{
+  "double_pass": [
+    {
+      "arm_runs_memoised": 11,
+      "arm_runs_reprofiling": 19,
+      "columns": 11,
+      "tables": 5
+    },
+    {
+      "arm_runs_memoised": 51,
+      "arm_runs_reprofiling": 99,
+      "columns": 51,
+      "tables": 25
+    },
+    {
+      "arm_runs_memoised": 201,
+      "arm_runs_reprofiling": 399,
+      "columns": 201,
+      "tables": 100
+    },
+    {
+      "arm_runs_memoised": 801,
+      "arm_runs_reprofiling": 1599,
+      "columns": 801,
+      "tables": 400
+    }
+  ],
+  "grain_curve": [
+    {
+      "eager": 8,
+      "lazy": 6,
+      "saved": 2,
+      "tables": 5
+    },
+    {
+      "eager": 28,
+      "lazy": 6,
+      "saved": 22,
+      "tables": 25
+    },
+    {
+      "eager": 103,
+      "lazy": 6,
+      "saved": 97,
+      "tables": 100
+    },
+    {
+      "eager": 403,
+      "lazy": 6,
+      "saved": 397,
+      "tables": 400
+    }
+  ],
+  "shipped": {
+    "arm_runs_memoised": 42,
+    "arm_runs_reprofiling": 47,
+    "columns": 42,
+    "statements_eager": 6,
+    "statements_lazy": 2,
+    "tables": 5
+  },
+  "shipped_rescued": [
+    "analytics.encounter_daily"
+  ]
+}

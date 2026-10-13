@@ -156,3 +156,67 @@ def check_the_grain_cost_saves_more_as_the_warehouse_grows():
         assert cost.lazy_statements == 2 * roundtwo.RESCUED, cost
         saved.append(cost.saved)
     assert saved[1] > saved[0], saved
+
+
+def check_the_committed_manifest_still_re_derives():
+    """The figures the README quotes, re-derived rather than trusted.
+
+    Every other measurement in this repo has had this check since the day it was
+    published. This one was written after the audit found a timing range in the README that
+    nothing could reproduce. The manifest holds counts and no wall times, so this check is
+    sound on any machine, which is the reason it can exist at all.
+    """
+    import json
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "measurements", "roundtwo-cost.json"),
+              encoding="utf-8") as fh:
+        committed = json.load(fh)
+
+    w = _warehouse()
+    cost = roundtwo.arm_cost(w["profiles"], w["upstream"])
+    counted = roundtwo.CountingConnection(w["con"])
+    grain.classify_shipped(counted, w["profiles"], w["graph"])
+    lazy_statements = counted.count
+    counted.reset()
+    grain.confidence_map(counted, w["graph"], w["tables"])
+    eager_statements = counted.count
+
+    shipped = committed["shipped"]
+    assert shipped["columns"] == cost.columns, (shipped["columns"], cost.columns)
+    assert shipped["arm_runs_memoised"] == cost.memoised
+    assert shipped["arm_runs_reprofiling"] == cost.reprofiling
+    assert shipped["statements_lazy"] == lazy_statements, (
+        "manifest says classify_shipped sends {} statements and it sends {}. "
+        "Regenerate with scripts/roundtwo_probe.py --manifest".format(
+            shipped["statements_lazy"], lazy_statements))
+    assert shipped["statements_eager"] == eager_statements
+
+    for row in committed["grain_curve"]:
+        assert row["eager"] - row["lazy"] == row["saved"], row
+
+    for row in committed["double_pass"]:
+        profiles = roundtwo.profiles_for(row["tables"], row["tables"] - 1)
+        upstream = roundtwo.upstream_for(row["tables"], row["tables"] - 1)
+        c = roundtwo.arm_cost(profiles, upstream)
+        assert row["columns"] == c.columns, (row, c.columns)
+        assert row["arm_runs_memoised"] == c.memoised, (row, c.memoised)
+        assert row["arm_runs_reprofiling"] == c.reprofiling, (row, c.reprofiling)
+
+
+def check_the_manifest_carries_no_wall_time():
+    """A committed figure has to re-derive somewhere else and a millisecond does not.
+
+    This is the check that stops the defect coming back by a different door. A future run
+    that adds a timing to the manifest gets told here rather than in a README nobody can
+    reproduce.
+    """
+    import json
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "measurements", "roundtwo-cost.json"),
+              encoding="utf-8") as fh:
+        text = fh.read()
+    for word in ("_ms", "seconds", "millis"):
+        assert word not in text, (
+            "{} is a wall time and the manifest is counts only".format(word))
