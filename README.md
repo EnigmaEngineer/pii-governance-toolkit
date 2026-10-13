@@ -101,7 +101,7 @@ out of what it finds. The content hash over the result is the test, because it c
 five fields including the nullability and key flags that nothing else consumes yet:
 
 ```
-engine                     duckdb v1.5.5
+engine                     duckdb v1.5.6
 tables recovered           5
 columns recovered          42
 key columns recovered      4
@@ -697,10 +697,10 @@ encounters were regrouped twice and the whole path run again. The lineage read, 
 weight column lookup, then the grain and the classifier. Nothing was told the answer.
 
 ```
-table                             rows    k    share  scored band      binary band
-analytics.encounter_daily         1444    1   0.9598  0.4319 review    0.4500 review
-analytics.encounter_day_dept       894    1   0.5246  0.2361 ignore    0.4500 review
-analytics.encounter_month_dept      53    2   0.0000  0.0000 ignore    0.4500 review
+table                                 rows    k    share  scored band      binary band
+analytics.encounter_daily             1444    1   0.9598  0.4319 review    0.4500 review
+analytics.encounter_day_dept           894    1   0.5246  0.2361 ignore    0.4500 review    <- moved
+analytics.encounter_month_dept          53    2   0.0000  0.0000 ignore    0.4500 review    <- moved
 
 k tells the bands apart              NO
 the singleton share tells them apart yes
@@ -753,6 +753,112 @@ produced a compliance report with 62 questions in it instead of 58.
 together. Six call sites used to build the upstream map from the same profiles and agree by
 luck, and adding a third thing every one of them needed is what would have made a seventh
 copy inevitable.
+
+## What round two costs, and the thread that asked was wrong about where
+
+`ot-085` asked what the second round costs on a warehouse wider than this one. It said the
+cost is database round trips, because the value arm sends a query per column. The first
+half was right and the second half was not, and finding that out took one counter.
+
+Round two sends no statements at all. The value arm reads counts off a `ColumnProfile` that
+`pii/profile.py` already built, so by the time the classifier runs there is no connection in
+reach. A counting wrapper around the connection sees zero statements through a full
+`classify_warehouse` over all 42 columns, and a check pins it.
+
+```
+python3 scripts/roundtwo_probe.py --db /tmp/pii.duckdb
+```
+
+What round two did cost was the arms running twice over the same profiles. It called
+`classify_table` again for a rescued table and threw the first answer away. On the shipped
+warehouse that is 47 column classifications where 42 would do.
+
+```
+tables round two rescues           1 of 5
+arm runs, one pass                 42
+arm runs, re-profiling round two   47
+share of them that was the repeat  0.1064
+statements classify_shipped sends  2
+  before 2026-10-13, every table   6
+```
+
+`classify.settle_table` is the fix and it is a split rather than a cache. The second pass
+reads signals and never reads a profile for anything but the column address, so round one's
+signals are enough and round two re-decides from them. `classify_table` is that split run
+end to end and the behaviour is unchanged. A check asserts the two give identical results on
+every column, every `person_linked` setting and three discounts.
+
+### The repeat does not grow with the warehouse, which is why the saving is small
+
+The repeat is bounded by how many tables round two rescues. A warehouse grows its ordinary
+tables and not its derived ones, so the repeat shrinks as a share of the work as the
+warehouse widens. Held at 3 rescued tables, it is 35 percent of the arm runs at 5 tables and
+0.7 percent at 400.
+
+The other extreme is the one worth measuring, so the probe measures it too. Every derived
+table rescued, which is the worst case the shape allows. The call count is the published
+figure because it is the same on any machine.
+
+```
+ tables   columns   one pass   repeated
+      5        11         11         19
+     25        51         51         99
+    100       201        201        399
+    400       801        801       1599
+```
+
+The wall time does not halve with the call count, because the second pass still runs in both
+shapes and only the arms came out of it. At 400 tables and 801 columns, over 7 trials of 9
+passes each on a quiet machine, the memoised path ran 13.02 to 15.79 ms against 22.77 to
+27.94 for the reprofiling one. So a time ratio between 1.63 and 1.82 against a call ratio of
+exactly 2.00. Two cores and an in process database. The probe prints a wall time per row and
+those numbers move by a third run to run, which is why this paragraph carries a range and
+the table above does not carry milliseconds at all.
+
+### The cost that does grow was the grain map, and it was opened as the smaller half
+
+`ot-138` was opened on 2026-10-12 as an accepted risk next to `ot-085`. It is the bigger of
+the two. `grain.confidence_map` was built for every table in the warehouse before a single
+column was classified, and round two is its only consumer. On a warehouse of 400 tables that
+is 403 statements paid up front so that 3 of them can be read.
+
+It was also understated. The thread said one statement per table. A table the graph says was
+grouped costs two, because `witness_for` checks the weight column against the catalog before
+it sends the grain query. An ungrouped table costs one. A check pins both.
+
+`grain.classify_shipped` now hands `classify_warehouse` a function instead of a map.
+`classify_warehouse` works the rescued set out of round one and calls it once with that set.
+The dict form still works and is what the sweeps and the checks pass, because a caller that
+already holds measured numbers should not have to wrap them in a lambda.
+
+```
+ tables   rescued     eager     lazy   saved   per table
+      5         3         8        6       2        1.60
+     25         3        28        6      22        1.12
+    100         3       103        6      97        1.03
+    400         3       403        6     397        1.01
+```
+
+The rescued column is held at 3, which is why the lazy column does not move. The per table figure falls
+towards 1.00 because the marts are the only tables costing two statements and they stop
+being a meaningful share of the warehouse.
+
+On the shipped warehouse `classify_shipped` went from 6 statements to 2. That is the whole
+measured saving here and it is four statements. The number worth reading is the 397 at 400
+tables, and the synthetic fixture is the only reason there is a number at all.
+
+### What this does not measure
+
+Profiling. Building the profiles is one query per column or one per table and `pii/scale.py`
+measured both on day 3. The fixture below builds its profiles in Python so the profiler's
+cost does not land on top of round two's and get read as part of it. A real run pays both and
+the profiler is by far the larger.
+
+The fixture's lineage graph is built as edges by hand rather than parsed out of SQL, because
+400 synthetic marts have no statements worth parsing. A check asserts the weight column it
+names is a column the table carries, since a hand built graph naming a missing column is the
+stale lineage failure `witness_for` started refusing on 2026-10-12 and it would read as a
+fixture bug.
 
 ## The policy is the easy half
 
@@ -1477,8 +1583,8 @@ fixture in `probe.outside_rule`.
 ## Running the checks
 
 ```
-python3 tests/run_all.py            619 checks, standard library only
-python3 tests/run_with_duckdb.py    725 checks, needs the driver
+python3 tests/run_all.py            643 checks, standard library only
+python3 tests/run_with_duckdb.py    757 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -1657,6 +1763,18 @@ statement per table and the share of rows standing for one person scales the res
 temporal signal. `analytics.encounter_daily.day` scores 0.4319 rather than 0.4500 and the
 same mart regrouped to a month and a department falls out of the review band entirely. The
 tool still does not decide for the reviewer, and that part was never the limitation.
+
+**Closed in v2. Round two re-decides from round one's signals instead of re-running the
+arms, and the grain is measured only for the tables it rescues.** On the shipped warehouse
+that is 47 arm runs down to 42 and 6 statements down to 2. The repeat was never a round trip
+cost, which is what `ot-085` assumed, and the saving is small here because the rescued set is
+one table of five.
+
+**The round two measurement runs on a synthetic fixture and the real saving on this
+warehouse is four statements.** The 397 statements saved at 400 tables comes off tables this
+repo generated for the purpose, with the rescued count held at 3 so the two costs could be
+told apart. A warehouse where most tables are derived marts would sit between the two shapes
+the probe prints and nothing here says where.
 
 **The floor the discount creates was not chosen by anybody.** It is 0.7778, which is the
 review band divided by the temporal rule's strength. A mart where half the rows are one
