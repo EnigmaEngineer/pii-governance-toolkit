@@ -809,11 +809,19 @@ figure because it is the same on any machine.
 
 The wall time does not halve with the call count, because the second pass still runs in both
 shapes and only the arms came out of it. At 400 tables and 801 columns, over 7 trials of 9
-passes each on a quiet machine, the memoised path ran 13.02 to 15.79 ms against 22.77 to
-27.94 for the reprofiling one. So a time ratio between 1.63 and 1.82 against a call ratio of
-exactly 2.00. Two cores and an in process database. The probe prints a wall time per row and
-those numbers move by a third run to run, which is why this paragraph carries a range and
-the table above does not carry milliseconds at all.
+passes each in the cloud container, the memoised path ran 10.36 to 17.72 ms against 24.01 to
+29.14 for the reprofiling one. The ratio those trials give is 1.35 to 2.38. The call ratio is
+exactly 2.00 and it sits inside that spread, so a wall time on two shared cores cannot
+resolve what the call count states exactly. That is why the table above carries no
+milliseconds and why the committed manifest carries none either.
+
+The counts are in `measurements/roundtwo-cost.json` and a check re-derives every one of
+them. Regenerate it with the line below, which is the shape every other measurement in this
+repo is committed under.
+
+```
+python3 scripts/roundtwo_probe.py --db /tmp/pii.duckdb --manifest measurements/roundtwo-cost.json
+```
 
 ### The cost that does grow was the grain map, and it was opened as the smaller half
 
@@ -846,6 +854,22 @@ being a meaningful share of the warehouse.
 On the shipped warehouse `classify_shipped` went from 6 statements to 2. That is the whole
 measured saving here and it is four statements. The number worth reading is the 397 at 400
 tables, and the synthetic fixture is the only reason there is a number at all.
+
+### The fixture's key flags decide what the rescue finds, not what it costs
+
+One field of the fixture turned out to matter and its docstring had said it did not.
+`classify.structure_signals` returns nothing for a key column, so a column marked as a key
+emits no temporal evidence at all. Mark every column in the fixture a key and the three
+mart day columns fall from 0.45 to zero.
+
+Round two still rescues the same three tables. The rescued set comes off the upstream table
+being person linked and the person table is linked by its email either way. What changes is
+that the rescue has nothing left to restore. The arm counts are identical across both runs.
+
+So round two costs the same whether it recovers three columns or none. A warehouse where the
+rescue never fires pays the full double pass to find that out. That is the case this
+measurement did not set out to look at and it is the one most likely to be true of a
+warehouse somebody else owns.
 
 ### What this does not measure
 
@@ -1583,8 +1607,8 @@ fixture in `probe.outside_rule`.
 ## Running the checks
 
 ```
-python3 tests/run_all.py            643 checks, standard library only
-python3 tests/run_with_duckdb.py    757 checks, needs the driver
+python3 tests/run_all.py            649 checks, standard library only
+python3 tests/run_with_duckdb.py    765 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
