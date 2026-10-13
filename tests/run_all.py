@@ -31,6 +31,7 @@ MODULES = [
     "tests.test_scale",
     "tests.test_lineage",
     "tests.test_grain",
+    "tests.test_roundtwo",
     "tests.test_mask",
     "tests.test_review",
     "tests.test_access",
