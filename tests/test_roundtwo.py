@@ -291,3 +291,160 @@ def check_settle_table_catches_a_mismatch_in_either_half_of_the_address():
             assert "does not belong" in str(exc)
         else:
             raise AssertionError("accepted a result for {}".format(wrong.address))
+
+
+def check_the_manifest_curve_covers_exactly_the_table_counts_that_were_measured():
+    """The published curve and the measured one are the same set of sizes.
+
+    A mutation pass moved every entry of `TABLE_COUNTS` and nothing noticed, because the
+    manifest check walks the committed rows rather than the constant. So the probe could be
+    measuring 5, 25, 100 and 401 while the README published a row labelled 400 and both
+    files would agree with themselves.
+    """
+    import json
+    import os
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "measurements", "roundtwo-cost.json"),
+              encoding="utf-8") as fh:
+        committed = json.load(fh)
+
+    want = list(roundtwo.TABLE_COUNTS)
+    for key in ("grain_curve", "double_pass"):
+        got = [row["tables"] for row in committed[key]]
+        assert got == want, (
+            "the manifest's {} covers {} and roundtwo.TABLE_COUNTS is {}. "
+            "Regenerate the manifest.".format(key, got, want))
+
+
+def check_the_fixture_fields_the_arms_really_do_ignore():
+    """`profiles_for` says its counts are plausible rather than exact. This is that claim.
+
+    A mutation pass flipped the nullability and moved the distinct counts on every column
+    of the fixture and 12 of those mutants survived, which is what an unasserted docstring
+    looks like under a grader. Left as a sentence it is a trap. An arm that started reading
+    nullability would make the fixture's plausible numbers load bearing and the first sign
+    would be a curve that moved for no reason anybody could name.
+
+    `is_key` is not in here and the next check says why.
+    """
+    from dataclasses import replace
+
+    base = roundtwo.profiles_for(25)
+    upstream = roundtwo.upstream_for(25)
+    want = [(r.address, r.category_key, r.confidence)
+            for r in classify.classify_warehouse(base, upstream_tables=upstream)]
+
+    variants = {
+        "nullability flipped": lambda p: replace(p, nullable=not p.nullable),
+        "distinct taken to one": lambda p: replace(p, distinct=1),
+        "distinct taken to the row count": lambda p: replace(p, distinct=p.rows),
+    }
+    for label, change in variants.items():
+        moved = tuple(change(p) for p in base)
+        got = [(r.address, r.category_key, r.confidence)
+               for r in classify.classify_warehouse(moved, upstream_tables=upstream)]
+        assert got == want, (
+            "{} moved a classification in the round two fixture, so profiles_for's "
+            "docstring is wrong about what the arms read".format(label))
+
+
+def check_the_fixture_key_flags_decide_what_the_rescue_recovers_and_not_what_it_costs():
+    """The one fixture field that moves a classification, and the cost it does not move.
+
+    This check exists because the opposite one failed. `profiles_for` claimed the arms read
+    the name, the type and the pattern hits, and flipping `is_key` moved classifications.
+    `classify.structure_signals` returns nothing for a key column, so the key flags gate
+    the only arm that emits temporal evidence.
+
+    The first guess about what that meant was wrong and the correction is the useful part.
+    Marking every column a key does not change which tables round two rescues. The rescued
+    set comes off the upstream table being person linked, and the person table is linked by
+    its email whatever the key flags say. What changes is that the rescue finds nothing to
+    restore. The three mart day columns score 0.45 normally and zero with every column a
+    key, and round two runs the same number of arm calls in both cases.
+
+    So round two costs the same whether it recovers three columns or none, which is worth
+    knowing about a pass whose cost this day set out to measure.
+    """
+    from dataclasses import replace
+
+    base = roundtwo.profiles_for(25)
+    upstream = roundtwo.upstream_for(25)
+    all_keys = tuple(replace(p, is_key=True) for p in base)
+
+    plain = roundtwo.arm_cost(base, upstream)
+    keyed = roundtwo.arm_cost(all_keys, upstream)
+    assert plain.rescued_tables == keyed.rescued_tables == roundtwo.RESCUED
+    assert plain.reprofiling == keyed.reprofiling, (plain.reprofiling, keyed.reprofiling)
+    assert plain.memoised == keyed.memoised
+
+    def marts_with_evidence(profiles):
+        return tuple(sorted(
+            r.address for r in classify.classify_warehouse(
+                profiles, upstream_tables=upstream)
+            if ".mart_" in r.address and r.confidence > 0))
+
+    assert len(marts_with_evidence(base)) == roundtwo.RESCUED, marts_with_evidence(base)
+    assert marts_with_evidence(all_keys) == (), marts_with_evidence(all_keys)
+
+    for p in base:
+        assert classify.structure_signals(replace(p, is_key=True)) == (), p.address
+
+
+def check_the_fixture_profile_shape_is_pinned_column_by_column():
+    """Every literal `profiles_for` writes, pinned, because the curve is measured on them.
+
+    The uniform flip check above moves a field on every column at once and a mutation pass
+    moves one literal in one constructor. Fifteen of those survived, so the fixture's own
+    numbers were the least graded thing in a day whose whole output is a measurement taken
+    over them.
+
+    This is the same posture `pii/crawl.py` takes about its recovered schema, where a
+    content hash over the result is the check. A reader can also see the fixture here
+    without running it, which a hash would not give them.
+    """
+    want = {
+        "admitted_at": ("DATE", False, False, 200, 200, 90, 10.0, ()),
+        "email": ("VARCHAR", False, False, 200, 200, 200, 22.0, (("email", 200),)),
+        "mart.day": ("DATE", False, False, 90, 90, 90, 10.0, ()),
+        "mart.encounters": ("BIGINT", False, False, 90, 90, 12, 2.0, ()),
+        "person_id": ("BIGINT", False, True, 200, 200, 200, 3.0, ()),
+        "ref.amount": ("BIGINT", False, False, 200, 200, 200, 3.0, ()),
+        "ref.code": ("VARCHAR", False, False, 200, 200, 200, 7.0, ()),
+    }
+
+    def kind(profile):
+        if ".mart_" in profile.table:
+            return "mart." + profile.column
+        if ".ref_" in profile.table:
+            return "ref." + profile.column
+        return profile.column
+
+    got = {}
+    for p in roundtwo.profiles_for(25):
+        shape = (p.sql_type, p.nullable, p.is_key, p.rows, p.non_null, p.distinct,
+                 p.mean_length, tuple(sorted(p.pattern_hits.items())))
+        k = kind(p)
+        if k in got:
+            assert got[k] == shape, (
+                "{} is built two different ways in one fixture: {} and {}".format(
+                    k, got[k], shape))
+        got[k] = shape
+
+    assert got == want, "the round two fixture moved. got {}".format(
+        {k: v for k, v in sorted(got.items()) if want.get(k) != v})
+
+
+def check_the_fixture_rows_constant_is_the_one_the_profiles_claim():
+    """`BENCH_ROWS` and the counts written into `profiles_for` are the same number.
+
+    A mutation moving `BENCH_ROWS` survived every check, because the fixture tables are
+    built from the constant and the profiles are written from the default argument and
+    nothing compared the two. A warehouse built with 201 rows described by profiles saying
+    200 is a fixture that lies quietly.
+    """
+    for p in roundtwo.profiles_for(25):
+        if ".mart_" in p.table:
+            continue
+        assert p.rows == roundtwo.BENCH_ROWS, (p.address, p.rows, roundtwo.BENCH_ROWS)

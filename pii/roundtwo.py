@@ -324,9 +324,16 @@ def profiles_for(total: int, rescued: int = RESCUED,
     """Profiles matching what `build` created, written in Python on purpose.
 
     Running the real profiler here would add one query per column to every number below
-    and profiling is day 3's measurement, not this one. The counts are plausible rather
-    than exact and nothing in this module reads them for anything but the arms, which
-    only care about the name, the type and the pattern hits.
+    and profiling is day 3's measurement, not this one.
+
+    The row and distinct counts are plausible rather than exact and a check asserts that
+    moving them changes no classification here. The nullability is the same.
+
+    `is_key` is the exception and it is load bearing. `classify.structure_signals` returns
+    nothing for a key column, so the key flags decide whether the temporal arm fires at
+    all, and that arm is what the rescue and the discount are about. An earlier version of
+    this docstring said the arms read only the name, the type and the pattern hits. A
+    mutation pass found that wrong and `tests/test_roundtwo.py` now pins both halves.
     """
     out: List[ColumnProfile] = []
     person = _person_table()
