@@ -214,9 +214,9 @@ REGENERATE_DERIVATION = ("python3 scripts/plant.py --db /tmp/pii.duckdb && "
 def check_the_derivation_manifest_re_derives_from_a_database():
     """Every row of the committed manifest, recomputed here.
 
-    The manifest is what the README is allowed to quote about ot-086. A figure in it that
-    cannot be recovered on another machine is the defect day 5 shipped and the second fire
-    found, so this is the gate that stops it happening to this one.
+    The manifest is what the README is allowed to quote about the weight refusal. A figure
+    in it that cannot be recovered on another machine is how an unreproducible timing range
+    once reached the README, so this is the gate that stops it happening to this one.
     """
     import json
 

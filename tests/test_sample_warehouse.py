@@ -149,7 +149,7 @@ def check_removals_measured_is_empty_for_a_two_label_report():
 
 
 def check_the_fixture_is_invisible_to_the_shipped_arm_set():
-    # `ot-077`'s actual ask. Every fixture column scores zero with the arm off, which is
+    # The real question. Every fixture column scores zero with the arm off, which is
     # the ignore band, which queues nothing and masks nothing.
     _loaded, before, _after, _outcomes, _samples = _bench()
     for r in before:
@@ -267,7 +267,7 @@ def check_the_three_confidences_the_waiver_rescued_are_re_derivable():
 
 
 def check_the_lineage_graph_has_one_builder_and_every_caller_agrees():
-    """`ot-126`, closed on 2026-10-10 when a third caller appeared.
+    """Moved into one place when a third caller appeared.
 
     Two probes built this graph with the same six lines and nothing compared them. This
     compares them, which is the part the deduplication does not give for free. A caller that
@@ -340,7 +340,7 @@ def check_the_committed_concentration_sweep_is_what_the_fixture_still_produces()
 
 
 def check_no_concentration_in_the_sweep_changes_a_single_verdict():
-    # The result of `ot-129`, pinned. Eleven thresholds from 1.00 down to 0.20 and one
+    # The result of the concentration sweep, pinned. Eleven thresholds from 1.00 down to 0.20 and one
     # verdict tally across all of them. If a future change makes the threshold matter, this
     # fails and that is the news rather than a nuisance.
     profiles, samples = _bench_sweep()

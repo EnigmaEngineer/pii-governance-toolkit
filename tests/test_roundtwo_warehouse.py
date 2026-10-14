@@ -42,7 +42,7 @@ def _warehouse():
 
 
 def check_round_two_sends_no_statements_at_all():
-    # This is the half of `ot-085` that was wrong. The thread called round two's cost
+    # This is the half of my guess that was wrong. I had called round two's cost
     # database round trips because the value arm sends a query per column. It does, at
     # profile time. By the time the classifier runs, the counts are on the profile and the
     # arms reach no connection, so a second pass over them cannot cost a statement.
@@ -70,7 +70,7 @@ def check_classify_shipped_only_measures_the_grain_of_what_it_rescues():
 
 
 def check_a_grouped_table_costs_two_statements_and_an_ungrouped_one_costs_one():
-    # `ot-138` said one statement per table. It is one for a table the graph says was never
+    # I had said one statement per table. It is one for a table the graph says was never
     # grouped and two for one it says was, because the weight column is checked against the
     # catalog before it is used. Worth pinning, because the per-table figure the cost curve
     # publishes is between the two and a reader will want to know why.
@@ -162,7 +162,7 @@ def check_the_committed_manifest_still_re_derives():
     """The figures the README quotes, re-derived rather than trusted.
 
     Every other measurement in this repo has had this check since the day it was
-    published. This one was written after the audit found a timing range in the README that
+    published. This one was written after a rerun found a timing range in the README that
     nothing could reproduce. The manifest holds counts and no wall times, so this check is
     sound on any machine, which is the reason it can exist at all.
     """

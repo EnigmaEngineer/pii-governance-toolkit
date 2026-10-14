@@ -646,8 +646,8 @@ def check_the_real_mart_traces_back_to_both_source_tables():
         "raw.encounter", "raw.patient"}
 
 def check_a_refusal_carries_the_table_the_statement_was_writing():
-    # ot-086. A consumer that reads the absence of an edge as a fact about the warehouse
-    # needs to know which table the reader gave up on, and until today nothing recorded it.
+    # A consumer that reads the absence of an edge as a fact about the warehouse needs
+    # to know which table the reader gave up on, and for a long time nothing recorded it.
     g = lineage.read_insert_select(
         "INSERT INTO mart.daily SELECT (SELECT max(x) FROM raw.o) AS peak, "
         "p.postal_code FROM raw.patient p")

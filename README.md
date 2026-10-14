@@ -134,8 +134,7 @@ difference, because a reordered table and a changed one are not the same event.
 optional table list and defaults to the declared schema, so `crawl.Crawl.fingerprint` calls
 it with what was crawled. It used to rebind `schema.TABLES` for the duration of the call
 and restore it in a `finally`, which worked and was not thread safe and mutated another
-module from outside. `ot-073` carried that from 2026-09-18 and this repo already argues
-against the shape elsewhere, in the note about sweeping a module global. Taking the
+module from outside. This repo already argues against the shape elsewhere, in the note about sweeping a module global. Taking the
 argument also let the control check for the hash stop reimplementing it, which it had been
 doing over a row the `Column` type refuses.
 
@@ -697,11 +696,11 @@ for an `AGGREGATE` edge whose source is a literal `*`, and it refuses rather tha
 when a table offers two candidates. Measuring the mart by row count instead reports a
 share of 1.0000 against the real 0.9598, which is the failure that discriminator exists to
 stop. It also refuses when the lineage reader did not finish reading what builds the
-table, which is `ot-086` and is covered in the limitations.
+table, which is covered in the limitations.
 
-### k was the statistic the thread asked for and it cannot do the job
+### k was the statistic I planned to use and it cannot do the job
 
-`ot-084` asked for a k on the grain. k is `min` over every group in the table, so one group
+The plan was a k on the grain. k is `min` over every group in the table, so one group
 of one holds it at 1 and the other fourteen hundred stop counting. To show that, the same
 encounters were regrouped twice and the whole path run again. The lineage read, then the
 weight column lookup, then the grain and the classifier. Nothing was told the answer.
@@ -731,7 +730,7 @@ rescued column queues only when more than 0.7778 of the table's rows stand for o
 `grain.rescue_floor` derives that from the two constants and two checks pin it, one against
 the constants and one that builds a share just under the floor and asserts the ignore band.
 
-This was derived rather than swept, and day 3 of this project is the reason. A threshold
+This was derived rather than swept, and the profiler work is the reason. A threshold
 was swept there across eleven settings and could not move a verdict at any of them, because
 the same multiply had put a floor under it that nobody had worked out first.
 
@@ -764,11 +763,12 @@ together. Six call sites used to build the upstream map from the same profiles a
 luck, and adding a third thing every one of them needed is what would have made a seventh
 copy inevitable.
 
-## What round two costs, and the thread that asked was wrong about where
+## What round two costs, and my guess was wrong about where
 
-`ot-085` asked what the second round costs on a warehouse wider than this one. It said the
-cost is database round trips, because the value arm sends a query per column. The first
-half was right and the second half was not, and finding that out took one counter.
+The question was what the second round costs on a warehouse wider than this one. My guess
+was that the cost is database round trips, because the value arm sends a query per
+column. The first half was right and the second half was not, and finding that out took
+one counter.
 
 Round two sends no statements at all. The value arm reads counts off a `ColumnProfile` that
 `pii/profile.py` already built, so by the time the classifier runs there is no connection in
@@ -835,12 +835,12 @@ python3 scripts/roundtwo_probe.py --db /tmp/pii.duckdb --manifest measurements/r
 
 ### The cost that does grow was the grain map, and it was opened as the smaller half
 
-`ot-138` was opened on 2026-10-12 as an accepted risk next to `ot-085`. It is the bigger of
-the two. `grain.confidence_map` was built for every table in the warehouse before a single
+I first wrote this down as a known risk next to the round two question. It is the bigger
+of the two. `grain.confidence_map` was built for every table in the warehouse before a single
 column was classified, and round two is its only consumer. On a warehouse of 400 tables that
 is 403 statements paid up front so that 3 of them can be read.
 
-It was also understated. The thread said one statement per table. A table the graph says was
+It was also understated. I had said one statement per table. A table the graph says was
 grouped costs two, because `witness_for` checks the weight column against the catalog before
 it sends the grain query. An ungrouped table costs one. A check pins both.
 
@@ -884,7 +884,7 @@ warehouse somebody else owns.
 ### What this does not measure
 
 Profiling. Building the profiles is one query per column or one per table and `pii/scale.py`
-measured both on day 3. The fixture below builds its profiles in Python so the profiler's
+measures both. The fixture below builds its profiles in Python so the profiler's
 cost does not land on top of round two's and get read as part of it. A real run pays both and
 the profiler is by far the larger.
 
@@ -1766,7 +1766,7 @@ The crawler runs under the DuckDB suite, whose oracle is 15.8 seconds against 0.
 standard library one, so it was sliced across calls with the control at both ends of each.
 
 Those control lines read 222 and the runner above reports 223, and the gap is not a typo.
-The identifier quoting check was written after the pass, when the audit asked what
+The identifier quoting check was written after the pass, when a review asked what
 `grade_nullability` does with a column called `order`. The control figure is what the pass
 really saw and it stays that way rather than being updated to look tidy.
 
@@ -1801,7 +1801,7 @@ tool still does not decide for the reviewer, and that part was never the limitat
 **Closed in v2. Round two re-decides from round one's signals instead of re-running the
 arms, and the grain is measured only for the tables it rescues.** On the shipped warehouse
 that is 47 arm runs down to 42 and 6 statements down to 2. The repeat was never a round trip
-cost, which is what `ot-085` assumed, and the saving is small here because the rescued set is
+cost, which is what I had assumed, and the saving is small here because the rescued set is
 one table of five.
 
 **The round two measurement runs on a synthetic fixture and the real saving on this
@@ -1880,7 +1880,7 @@ is where that coupling is visible, which is the most the code can do about it wi
 second reader to test against.
 
 **A missing weight edge used to mean two different things and now it means one.**
-`ot-086` opened on the day the typed in dict was deleted, because deleting it narrowed the
+This came up on the day the typed in dict was deleted, because deleting it narrowed the
 blast radius rather than removing the defect. `weight_for` returned `None` both for a table
 nothing derives, where rows really are people, and for a table whose derivation statement
 the reader walked away from partway through. The second case reported a pre-aggregated

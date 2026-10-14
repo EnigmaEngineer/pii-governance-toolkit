@@ -18,7 +18,7 @@ is that extent written as a number.
 `k_anonymity` is reported and does not feed anything, and the reason is worth stating. k on
 the grain is `min` over every group in the table, so one group of one takes it to 1 and the
 other fourteen hundred stop mattering. It is a necessary condition wearing a measurement's
-clothes, which is the same defect `ot-084` opened against the rescue itself. The
+clothes, which is the same defect the rescue itself had before it was scored. The
 distribution has resolution and the minimum does not.
 
 The population view of the same data already exists. `mask.Residual.alone_share` is
@@ -168,7 +168,7 @@ def rescue_floor(strength: float = TEMPORAL_TYPE_STRENGTH,
     starts reaching a person. Below this share the rescue runs and the column lands in the
     ignore band anyway, which looks like the rescue failing and is the bands working.
 
-    This is here because day 3 of this project found a threshold that could not move a
+    This is here because the profiler work found a threshold that could not move a
     verdict at any setting, for exactly this reason, and found it by sweeping it rather
     than by deriving it. Derived this time, and a check pins it against both constants.
     """
@@ -342,11 +342,11 @@ class RescueReport:
     def k_separates(self) -> bool:
         """Whether k on the grain tells the rescued tables from the refused ones.
 
-        This is the question `ot-084` asked for by name and the answer here is no. k is
+        This is the statistic I first planned to use and the answer here is no. k is
         `min` over every group, so a single group of one holds it at 1 whatever the other
         fourteen hundred groups do. Two tables that end in different bands can share a k,
         and when they do, k is a necessary condition and not a score. Reported as a boolean
-        because the thread's premise is worth refuting out loud rather than quietly
+        because my own premise is worth refuting out loud rather than quietly
         replacing.
         """
         by_k: Dict[int, set] = {}
@@ -396,7 +396,7 @@ def classify_shipped(con,
     and left the map itself copied around. Adding a third thing every caller needs is what
     makes a seventh copy inevitable, so this is the one place it happens now.
 
-    The grain goes in as a function rather than as a measured map, and that is `ot-138`.
+    The grain goes in as a function rather than as a measured map, on purpose.
     Measuring a table's grain costs statements and round two rescues the derived tables
     that named nobody, which is three of five here and will be a handful of however many a
     real warehouse has. Handed the function, `classify_warehouse` works out that set from

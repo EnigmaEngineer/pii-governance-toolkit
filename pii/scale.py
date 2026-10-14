@@ -1,6 +1,6 @@
 """Where one query per column stops being fine, measured rather than argued.
 
-`ot-078` asked the question and the profiler docstring answered it with a guess. The guess
+The profiler docstring used to answer that question with a guess. The guess
 had an arithmetic error in it, so the measurement is worth more than usual.
 
 What is being compared. `profile.profile_column` issues one statement per column, so a

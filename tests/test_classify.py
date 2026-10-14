@@ -796,7 +796,7 @@ def check_a_multi_token_column_name_still_matches_the_name_arm():
     # column still matched and every multi word one stopped matching. Nothing in the suite
     # had ever asserted a multi word name.
     #
-    # This is the arm the day 1 ablation found decides everything on this warehouse, so an
+    # This is the arm the ablation found decides everything on this warehouse, so an
     # ungraded path through its matcher is worth more than the mutant that found it.
     cases = {
         "patient_name": "person_name",

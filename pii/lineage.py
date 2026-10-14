@@ -54,7 +54,7 @@ VALUE_PRESERVING = (EdgeKind.COPY, EdgeKind.CAST, EdgeKind.GROUPED)
 # on every source table, so it gets an AGGREGATE edge per source with this in the column
 # position. `mask.weight_candidates` keys on it, which makes it a convention two modules
 # share rather than a property of SQL. It is a constant here so that coupling is greppable
-# and so a reader built on something else knows what it has to produce. `ot-086`.
+# and so a reader built on something else knows what it has to produce.
 ROW_COUNT_SOURCE = "*"
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ class Refusal:
     the whole value of the field. A refusal with a table on it says this table's
     derivation is partly unread. A refusal with none says some table's derivation is
     unread and nobody knows which, so no table in the graph can be called underived.
-    Added for `ot-086`, which found a consumer reading the absence of an edge as a fact.
+    Added because a consumer was reading the absence of an edge as a fact.
     """
 
     what: str
@@ -562,8 +562,8 @@ def warehouse_graph(con) -> "Graph":
 
     These six lines used to live in `scripts/classify_probe.py` and in
     `scripts/compliance_report.py`, reading the same statement and merging the same keys and
-    agreeing by luck. `ot-126` recorded it on 2026-10-09 and said it was due on the day a
-    third caller appeared. `scripts/sample_probe.py` was that caller on 2026-10-10.
+    agreeing by luck. The plan was to move them the day a third caller appeared, and
+    `scripts/sample_probe.py` was that caller.
 
     It lives here rather than in a script because the probes are not a library and a probe
     importing another probe to borrow a function is the shape that cost an afternoon in

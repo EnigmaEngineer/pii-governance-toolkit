@@ -373,7 +373,7 @@ def check_a_reviewers_decision_does_not_invent_a_confidence():
 
 
 def check_the_reviewer_path_and_the_classifier_path_read_one_rulebook():
-    """ot-082. The two callers of the category mapping must not be able to drift.
+    """The two callers of the category mapping must not be able to drift.
 
     `resolve_review` used to get here by building a Classification carrying a Signal
     nobody produced and feeding it back through `policy_for`. Removing that leaves two
@@ -587,7 +587,7 @@ def check_a_star_aggregate_into_another_table_is_not_this_tables_weight():
 
 
 def check_a_table_nothing_derives_is_told_apart_from_one_that_was_not_read():
-    # The ot-086 distinction. Both tables have no weight edge and the reasons are not the
+    # The distinction this whole path exists for. Both tables have no weight edge and the reasons are not the
     # same kind of thing. raw.patient has no statement in the graph and rows are people.
     # analytics.m has one the reader walked away from partway through.
     read_but_empty = _g(_e("raw.a.id", "m.id", EdgeKind.COPY))

@@ -324,7 +324,7 @@ def fingerprint(tables: Optional[Sequence[Table]] = None) -> str:
     `tables` exists so a caller holding its own tables can get the same hash over them
     without this module's state moving. The crawler used to reach in and rebind `TABLES`
     around a call, restoring it in a finally. That worked and it was not thread safe, and
-    it mutated another module from outside. `ot-073` carried it from 2026-09-18.
+    it mutated another module from outside.
     """
     rows = []
     for t in sorted(TABLES if tables is None else tables, key=lambda x: x.fqn):

@@ -103,7 +103,7 @@ def check_coarsening_the_grain_takes_the_rescue_away():
 
 
 def check_k_on_the_grain_cannot_tell_the_rescued_table_from_the_refused_one():
-    # The thread this work closes asked for a k. Two of the three tables carry a k of 1
+    # The original plan was a k. Two of the three tables carry a k of 1
     # and end in different bands, so a rule reading k would have kept the binary it was
     # supposed to replace.
     report = grain.RescueReport(rows=tuple(_built()["rows"]))

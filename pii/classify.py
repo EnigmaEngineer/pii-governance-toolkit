@@ -648,8 +648,8 @@ def settle_table(profiles: Sequence[ColumnProfile],
     round one calls this directly and the arms never run again, which is the whole point of
     it being a separate function. `classify_warehouse` is that caller. Round two used to
     re-run `classify_column` on every column of a rescued table and throw the first result
-    away, so the arms ran twice over the same profiles for no new evidence. `ot-085` asked
-    what that costs and `pii/roundtwo.py` is the answer.
+    away, so the arms ran twice over the same profiles for no new evidence. What that
+    costs was an open question and `pii/roundtwo.py` is the answer.
 
     Nothing here reads a `ColumnProfile` except to address the result, so the signals are
     the input and the profiles are only along for the table and column names. That is why
@@ -698,7 +698,7 @@ def settle_table(profiles: Sequence[ColumnProfile],
 # second, and it exists because measuring a table's grain costs database statements and
 # round two rescues a handful of tables out of however many the warehouse has. Handed a
 # callable, `classify_warehouse` works out which tables it is going to rescue and asks for
-# those. See `ot-138` for what the eager version cost.
+# those. `pii/roundtwo.py` measures what the eager version cost.
 GrainConfidence = Union[Mapping[str, float],
                         Callable[[Tuple[str, ...]], Mapping[str, float]]]
 

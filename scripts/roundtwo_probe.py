@@ -3,14 +3,14 @@
     python3 scripts/plant.py --db /tmp/pii.duckdb
     python3 scripts/roundtwo_probe.py --db /tmp/pii.duckdb
 
-`ot-085` said round two classifies every column of a rescued table twice and that the cost
-is database round trips, because the value arm sends a query per column. Half of that is
+My guess was that round two classifies every column of a rescued table twice and that the
+cost is database round trips, because the value arm sends a query per column. Half of that is
 right. The double pass was real. The round trips are not: the value arm reads counts off a
 `ColumnProfile` that the profiler already built, so round two reaches no database at all.
 This prints the statement count to show that rather than arguing it.
 
-`ot-138` said `grain.confidence_map` sends one statement per table before any column is
-classified. That one is right and it was understated. A table the graph says was grouped
+I also guessed that `grain.confidence_map` sends one statement per table before any column
+is classified. That one is right and it was understated. A table the graph says was grouped
 costs two, because the weight column is checked against the catalog first.
 
 The arithmetic is in `pii/roundtwo.py` and `pii/classify.py`, which the suite imports and
@@ -194,7 +194,7 @@ def manifest(shipped: dict, grain_rows: list, double_rows: list) -> dict:
     """The figures a README is allowed to quote, and no wall times.
 
     Every other measurement in this repo commits a manifest and a check re-derives it.
-    This one did not until the audit found a timing range in the README that nothing could
+    This one did not until a rerun found a timing range in the README that nothing could
     reproduce.
 
     Wall times are left out on purpose. A committed number has to re-derive on another

@@ -168,8 +168,7 @@ class Decision:
 
     Split out of `policy_for` so the reviewer path can reach the same mapping without
     holding a `Classification`. It used to build one, complete with a `Signal` nobody
-    produced, purely to get back in through the front door. `ot-082` carried that from
-    2026-09-21.
+    produced, purely to get back in through the front door.
     """
 
     action: Action
@@ -512,7 +511,7 @@ def weight_for(graph, table: str) -> Optional[str]:
     case and the right default. Two candidates is not a default, it is a question, and
     guessing between them silently is worse than the typed in constant this replaced.
 
-    The third case is the one `ot-086` opened. A table the reader could not fully read has
+    The third case is the one that was missing. A table the reader could not fully read has
     no group size edge for the same reason it has no edges at all, and returning None there
     reported a mart as safer than it is by the factor its GROUP BY deduplicated by. That
     now raises. The cost is that a warehouse holding one statement this reader cannot parse

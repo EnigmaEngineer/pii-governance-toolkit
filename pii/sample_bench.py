@@ -1,6 +1,6 @@
 """A table of columns the predicate set was never going to find, and the grading of it.
 
-`ot-077` asked for one thing and it is specific. A column deliberately formatted outside
+The question here is one thing and it is specific. A column deliberately formatted outside
 the predicate set, graded against what a sampling arm would have found. The sample
 warehouse cannot answer it, because I wrote the corpus and the predicates together and
 every format in it is one I thought of.

@@ -4,7 +4,7 @@
     python3 scripts/scale_probe.py --widths 336 --only batched
     python3 scripts/scale_probe.py --widths 42,84,168 --manifest measurements/profiler-scaling.json
 
-`ot-078` asked where one query per column stops being fine. The expected answer was that it
+The question is where one query per column stops being fine. The expected answer was that it
 stops being fine somewhere wide and batching fixes it. On DuckDB the answer came back the
 other way round, so the per-width output is printed and flushed as each width finishes
 rather than collected and printed at the end. A width that takes the process down with it

@@ -11,11 +11,11 @@ load. An unnamed identifier is a disagreement with every named category by const
 the arm can lower the confidence of a column the classifier already had right.
 
 The second is on `probe.outside_rule`, which is four columns deliberately formatted outside
-the predicate set. That is `ot-077`'s actual ask. The sample warehouse cannot answer it
+the predicate set. That is the real question. The sample warehouse cannot answer it
 because I wrote the corpus and the predicates in the same week.
 
 Both go through `pii.ablation.ablate` rather than through a second diff written here. An
-arm set is an arm set, and the harness committed on day 1 for removing arms takes adding
+arm set is an arm set, and the harness built earlier for removing arms takes adding
 one with no change at all.
 """
 
@@ -152,7 +152,7 @@ def section_bench(con):
 
 
 def section_sweep(warehouse_pieces, bench_pieces):
-    """`ot-129`. The shape concentration threshold swept over both readings together.
+    """The shape concentration threshold swept over both readings together.
 
     One table rather than two runs, because the whole question is whether a threshold that
     finds more on the fixture costs anything on the warehouse. Swept separately they are

@@ -278,9 +278,9 @@ def main():
         crawled = crawl.crawl(con)
         profiles = profile.profile_crawl(con, crawled)
         # The policy is the shipped artefact, so it is generated from the shipped
-        # classifier configuration, which reads the lineage graph. ot-126 moved these six
-        # lines into lineage.warehouse_graph on 2026-10-09 and this caller kept its own
-        # copy, which is the fourth one that function exists to delete. Verified identical
+        # classifier configuration, which reads the lineage graph. These six lines moved
+        # into lineage.warehouse_graph a while ago and this caller kept its own copy,
+        # which is the fourth one that function exists to delete. Verified identical
         # on both edges and refusals before swapping.
         graph = lineage.warehouse_graph(con)
         results = grain.classify_shipped(con, profiles, graph)

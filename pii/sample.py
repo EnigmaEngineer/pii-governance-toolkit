@@ -63,21 +63,21 @@ IDENTIFIER_MAX_LENGTH = 24
 
 # A code with no letter in it has to be long enough that a year, a quantity or a small
 # count cannot reach it. Eight digits is a date and four is a year, which is the argument
-# for nine. `ot-129` is the thread that says an argument is not a sweep.
+# for nine. That is an argument and not a sweep, and the sweep is in the probe.
 IDENTIFIER_DIGIT_FLOOR = 9
 
 @dataclass(frozen=True)
 class Thresholds:
     """The four numbers the shape rule turns on, in one object so a sweep can move them.
 
-    `ot-129` is why this exists. Four module globals chosen by looking at one fixture, and
+    Four module globals chosen by looking at one fixture is why this exists, and
     `scripts/classify_probe.py` sweeps the band thresholds and publishes where the cliff
     sits while these got none of that. A sweep over a module global means rebinding it,
-    which is the pattern day 1 removed from the ablation harness because a rebind cannot be
+    which is the pattern the ablation harness dropped early on because a rebind cannot be
     asserted on and leaves the caller unsure which version ran.
 
-    One parameter and not four. `ot-128` is the standing warning about widening a signature
-    for a measurement, and the shape that respects it is a named object the default of which
+    One parameter and not four. Widening a signature just to make a measurement possible is
+    a habit worth resisting, and the shape that respects that is a named object the default of which
     is the shipped configuration.
     """
 
@@ -117,7 +117,7 @@ def concentration_floor(strength: float = UNKNOWN_IDENTIFIER_STRENGTH,
     evidence and no decisions.
 
     At the shipped 0.55 and 0.35 that is 0.6364. `probe.outside_rule.site_patient_ref` is
-    the column `ot-129` said the threshold was the only thing standing between the arm and,
+    the column I had assumed the threshold was the only thing standing between the arm and,
     and its dominant shape holds a quarter of the sample. A quarter is under the floor, so
     the threshold was never what was standing there.
 
@@ -452,7 +452,7 @@ def attach(profiles: Sequence[ColumnProfile],
     """Put each sample's signals on its profile, leaving the sample itself behind.
 
     The signals ride on the profile rather than arriving as a second argument to the
-    classifier. That was a shape decision and `ot-128` is the reason it went this way. The
+    classifier. That was a shape decision made to keep the signature narrow. The
     arm set parameter already says which arms a run considers, and a second parameter
     saying where one arm's evidence comes from would mean two things to keep in step. A
     profile carrying no sampled signals and an arm set naming the sampling arm produces

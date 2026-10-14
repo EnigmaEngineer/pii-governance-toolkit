@@ -216,7 +216,7 @@ def check_thresholds_refuse_a_share_outside_zero_to_one_and_an_empty_length_rang
 
 def check_lowering_the_concentration_is_what_turns_a_mixed_format_column_into_a_finding():
     # Four formats at a quarter each is `probe.outside_rule.site_patient_ref`, the column
-    # the arm misses. It is the whole reason `ot-129` wanted this swept.
+    # the arm misses. It is the whole reason this got swept.
     mixed = _sample(shapes={"AAA999999": 25, "AA-999999": 25,
                             "999999999": 25, "A9999999999": 25})
     assert sample_signals(mixed) == ()

@@ -24,9 +24,9 @@ no value and no shape, because this module never asks for one.
 One query per column was the original shape and the reason given for it was wrong. The
 docstring said a table-wide query names every predicate for every column, which is a
 product growing quadratically in the width of the table. It is not. The predicate set is
-fixed at six, so a table of W columns needs 9W expressions, which is linear. `ot-078`
-asked where one query per column stops being fine and the answer turned out to start with
-an arithmetic error in the reason for not asking.
+fixed at six, so a table of W columns needs 9W expressions, which is linear. So the
+answer to where one query per column stops being fine started with an arithmetic error
+in the reason for not asking.
 
 Both shapes are here now. `profile_column` is the reference implementation and
 `profile_table` is the batched one, and `disagreements` is the check that holds them to

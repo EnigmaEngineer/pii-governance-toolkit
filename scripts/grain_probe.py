@@ -112,7 +112,7 @@ def section_floor() -> None:
         classify.TEMPORAL_TYPE_STRENGTH))
     print("so a rescued column queues only above {:.4f} of its rows being one person"
           .format(floor))
-    print("\nderived rather than swept. day 3 of this project swept a threshold that could")
+    print("\nderived rather than swept. the profiler work swept a threshold that could")
     print("not move a verdict at any setting, because the same multiply put a floor under")
     print("it that nobody had worked out. this one was worked out first.")
 
@@ -131,7 +131,7 @@ def section_grains(rows) -> None:
         "yes" if report.k_separates() else "NO"))
     print("the singleton share tells them apart {}".format(
         "yes" if report.share_separates() else "NO"))
-    print("\nthe thread asked for a k on the grain. k is min over every group, so one group")
+    print("\nthe plan was a k on the grain. k is min over every group, so one group")
     print("of one holds it at 1 and the rest stop counting. two of the tables above share")
     print("a k of 1 and end in different bands, which is the whole reason the share is the")
     print("statistic and the minimum is not.")

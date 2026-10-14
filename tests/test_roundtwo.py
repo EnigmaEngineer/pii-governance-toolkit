@@ -40,8 +40,8 @@ def check_they_agree_with_a_discount_too():
 
 def check_the_repeat_is_the_rescued_columns_and_not_the_warehouse():
     # This is the finding. The repeat is bounded by the rescued set, so it shrinks as a
-    # share of the work as the warehouse grows, which is the opposite of what `ot-085`
-    # expected when it called the cost a per-column one.
+    # share of the work as the warehouse grows, which is the opposite of what I
+    # expected when I called the cost a per-column one.
     wide = roundtwo.arm_cost(roundtwo.profiles_for(400),
                              roundtwo.upstream_for(400))
     narrow = roundtwo.arm_cost(roundtwo.profiles_for(5), roundtwo.upstream_for(5))

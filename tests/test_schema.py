@@ -220,8 +220,8 @@ def check_the_schema_fingerprint_moves_on_every_field_it_covers():
     #
     # This used to build the row dicts and hash them here, which was a second
     # implementation of the thing under test. It would have agreed with the real one right
-    # up until somebody edited one of them. The hash takes its tables as an argument since
-    # ot-073, so the variants now go through the real function. Doing that also showed the
+    # up until somebody edited one of them. The hash takes its tables as an argument now,
+    # so the variants go through the real function. Doing that also showed the
     # old version was hashing a column Column itself refuses, a nullable key, so one of
     # the five fields was being graded on a row that cannot exist in the schema.
     def one(name="t", column="a", sql_type="BIGINT", nullable=True, is_key=False):

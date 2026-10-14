@@ -2,8 +2,8 @@
 
 `classify.classify_warehouse` runs two rounds when it is given a lineage map. Round one
 classifies every table on its own columns. Round two re-decides the derived tables that
-named nobody but came out of tables that did. `ot-085` asked what the second round costs
-on a warehouse wider than this one and `ot-138` asked the same question about the grain
+named nobody but came out of tables that did. The open question was what the second round
+costs on a warehouse wider than this one, and the same question about the grain
 measurement that feeds it. Both are here because they are one question asked twice.
 
 The two costs are different in kind and that is the finding. Round two's own cost is CPU
@@ -19,7 +19,7 @@ across a wire charges per statement and this machine cannot say what that charge
 count is the measurement and the milliseconds are context.
 
 What is deliberately not measured. Profiling. Building the `ColumnProfile` objects is one
-query per column or one per table and day 3 measured both in `pii/scale.py`. The fixtures
+query per column or one per table and `pii/scale.py` measures both. The fixtures
 below build profiles in Python so that the profiler's cost does not sit on top of round
 two's and get read as part of it.
 
@@ -43,8 +43,8 @@ from pii.classify import (ALL_ARMS, REVIEW_AT, Arm, Classification, ColumnProfil
 BENCH_SCHEMA = "grainbench"
 
 # Table counts to measure. 5 is the shipped warehouse, so the first row of the curve is
-# comparable with every other figure this repo publishes. 400 is the number `ot-138` names
-# and the reason it names it is that the tool's premise is being pointed at a warehouse
+# comparable with every other figure this repo publishes. 400 is the width I care about
+# and the reason is that the tool's premise is being pointed at a warehouse
 # somebody else owns.
 TABLE_COUNTS: Tuple[int, ...] = (5, 25, 100, 400)
 
@@ -62,7 +62,7 @@ class CountingConnection:
     Only `execute` is wrapped and everything else is forwarded, because `execute` is the
     only thing in this repo that reaches a database. The statements are kept rather than
     just counted so a reader can see WHICH statements the eager path was sending, which is
-    what turned the per-table claim in `ot-138` into a per-table-and-a-half one.
+    what turned my per-table estimate into a per-table-and-a-half one.
     """
 
     def __init__(self, con):
@@ -249,8 +249,8 @@ def time_call(fn, passes: int = 5) -> Timing:
     """Median of `passes` runs. The median because one slow pass is the machine and not
     the code, and a mean lets that pass into the published number.
 
-    `scale.median` rather than a second copy of four lines. It was written for day 3's
-    profiler bench and nothing graded it until today, which a mutation pass found by
+    `scale.median` rather than a second copy of four lines. It was written for the
+    profiler bench and nothing graded it until recently, which a mutation pass found by
     moving the index of the hand rolled copy that used to be here and surviving.
     """
     samples = []
@@ -324,7 +324,7 @@ def profiles_for(total: int, rescued: int = RESCUED,
     """Profiles matching what `build` created, written in Python on purpose.
 
     Running the real profiler here would add one query per column to every number below
-    and profiling is day 3's measurement, not this one.
+    and profiling is `pii/scale.py`'s measurement, not this one.
 
     The row and distinct counts are plausible rather than exact and a check asserts that
     moving them changes no classification here. The nullability is the same.
