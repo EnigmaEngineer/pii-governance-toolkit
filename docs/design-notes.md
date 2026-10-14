@@ -1,0 +1,1514 @@
+# Design notes
+
+Moved out of the README so the front page stays short. Back to the [README](../README.md).
+
+## The schema is no longer its own witness
+
+An earlier version of this repo shipped a problem here: `pii/schema.py` was a hand written description of
+the warehouse `scripts/plant.py` then built, so any check that the two agreed was a check
+that one of them had written the other. Nothing was learned by running it.
+
+`pii/crawl.py` reads the catalog instead and rebuilds the same `Table` and `Column` objects
+out of what it finds. The content hash over the result is the test, because it covers all
+five fields including the nullability and key flags that nothing else consumes yet:
+
+```
+engine                     duckdb v1.5.6
+tables recovered           5
+columns recovered          42
+key columns recovered      4
+declared fingerprint       1501a19ca3d8
+crawled fingerprint        1501a19ca3d8
+recovered the schema       yes
+differences                0
+```
+
+**Getting there needed a change to the warehouse and not to the crawler.** The emitted DDL
+carried no primary key at all, so `is_key` existed only in this repo's own Python. Four of
+the five fields in that hash were in the catalog and the fifth was nowhere, which made the
+pinned value unreachable for a reason that had nothing to do with reading it. The keys are
+declared now, and the crawler recovers them from `duckdb_constraints()` rather than from
+column names, which matters because `raw.encounter.patient_id` ends in `_id` and is not a
+key.
+
+The crawl reads no rows. Names, types and flags all come out of the catalog, which is the
+property a tool wants if it is going to be pointed at data somebody is not cleared to see.
+`grade_nullability` is the one function that touches data and it reads `count(*) - count(c)`
+per column, so it returns no values either.
+
+**The fingerprint is asymmetric about order and it is worth knowing which way.** It sorts
+the tables, so reversing them leaves the hash identical. It does not sort the columns, so
+swapping two inside a table moves it. A check written on the opposite assumption failed and
+that is how this was found. Column order is reported by the comparison as its own kind of
+difference, because a reordered table and a changed one are not the same event.
+
+**The crawler gets the same hash by passing its tables in.** `schema.fingerprint` takes an
+optional table list and defaults to the declared schema, so `crawl.Crawl.fingerprint` calls
+it with what was crawled. It used to rebind `schema.TABLES` for the duration of the call
+and restore it in a `finally`, which worked and was not thread safe and mutated another
+module from outside. This repo already argues against the shape elsewhere, in the note about sweeping a module global. Taking the
+argument also let the control check for the hash stop reimplementing it, which it had been
+doing over a row the `Column` type refuses.
+
+## Nullability is a claim about the data now
+
+The corpus writes nulls. It did not at first. While it did not, every nullable flag was a declaration nothing had
+ever exercised. The suite could check that a NOT NULL column holds no null, which is the
+easy direction. The reverse reading had no evidence at all.
+
+From `scripts/plant.py`, about the four generated tables:
+
+```
+  nullable_columns             26
+  nulls_total                  811
+  nullable, never null         none
+```
+
+From `scripts/crawl_probe.py`, about all five tables in the database:
+
+```
+columns graded             42
+declared not null          13
+not null holding a null    none
+nullable and exercised     29
+nullable, never null       none
+```
+
+The rate is `pii.corpus.NULL_RATE`, which is 0.02.
+
+The rate is a number chosen rather than measured. It is low enough that no aggregate moves
+far and high enough that a thousand rows are very unlikely to miss a column by chance, and
+the suite asserts the observed count rather than trusting that arithmetic.
+
+**The nulls are applied in a post pass, after every value is drawn.** So `generate` with
+the rate turned off reproduces the corpus as it stood before nulls, byte for byte. The suite
+pins the four digests to prove it. That matters because it makes every figure the nulls
+moved attributable to the nulls rather than to a shifted draw.
+
+**The first null broke the load, and the schema was wrong rather than the corpus.**
+`analytics.encounter_daily.department` was declared NOT NULL and the mart groups by
+`raw.encounter.department`, which is nullable. A derived column cannot be stricter than the
+column it comes from. Nothing could see it while the corpus had no null in it anywhere. The
+flag moved, and moving it moved the published fingerprint from `dcff0aa3e7a5` to
+`1501a19ca3d8`. Both values are in the suite rather than one quietly replacing the other.
+
+## The decision this is built on
+
+One label per column cannot carry a masking policy. A postal code is not personal data and
+a postal code plus a birth date plus a sex is a person. A diagnosis is not an identifier
+and it is the thing identification exposes. A timestamp identifies at second precision and
+does not at year precision. None of that fits in a label.
+
+So a category carries three things. What the column does on its own, which is direct or
+quasi or sensitive or nothing. Which rulebooks claim it, as a set rather than a severity,
+because HIPAA and GDPR disagree about what matters and neither contains the other. And the
+granularity at which it stops being an identifier, where that is the deciding variable.
+
+`docs/adr-0001-one-label-per-column-is-not-enough.md` carries the argument.
+
+## What the obvious scan finds
+
+`pii/naive.py` is a list of substrings matched against column names plus a handful of
+regexes matched against values. It is what almost every in-house PII scan turns out to be
+when you read it, and it is here so that any later classifier has a floor printed beside
+it. The name list was written from memory, covering what came to mind, which is the point.
+
+Graded against the Safe Harbor clause list over the sample schema:
+
+```
+in safe harbor scope       20 of 42 columns
+recall, names only         10/20  0.5000
+recall, names plus values  13/20  0.6500
+  no value sample reached   analytics.encounter_daily, so 2 in scope columns there were graded
+  on names alone. scripts/classify_probe.py reads its sample out of the
+  database and sees all five tables, which is why its floor row is higher.
+false alarms               0
+flagged as wrong category  2
+
+  direct     9/11  0.8182
+  quasi      4/9  0.4444
+```
+
+Most of the way there on direct identifiers. A coin flip on quasi ones. Both halves are
+Safe Harbor identifiers and only one half looks like one, so a single PII flag reports a
+number in the middle and hides which half it came from.
+
+What it walks past:
+
+```
+  raw.patient.city                         postal_code      quasi
+  raw.encounter.admitted_at                event_date       quasi
+  raw.encounter.discharged_at              event_date       quasi
+  raw.claim.member_number                  health_plan_id   direct
+  raw.device_reading.device_serial         device_id        direct
+  raw.device_reading.taken_at              event_date       quasi
+  analytics.encounter_daily.day            event_date       quasi
+```
+
+Four of seven are timestamps. Clause C says every element of a date tied to an individual is
+an identifier except the year, and no column name heuristic is going to call `admitted_at`
+personal data.
+
+Two more columns are flagged as the wrong thing, and recall counts those as found because
+the column did get flagged:
+
+```
+  raw.encounter.attending_npi              planted licence_number       naive phone
+  raw.claim.submitted_on                   planted event_date           naive phone
+```
+
+Both are the same defect. The phone regex is `^\+?\d[\d\-\s]{7,}\d$`, so a ten digit
+identifier matches it and so does an ISO date. `2026-03-14` is digits and dashes of about
+the right length. It is left unfixed on purpose. Improving the floor is the one thing this
+arm must not do, because the gap is the measurement.
+
+## Who the quasi identifiers still expose
+
+Every figure in this section is a figure about `pii/corpus.py`. There is no real patient
+data here and there never will be, which is why it is planted. Regenerate with
+`python3 scripts/coverage_probe.py`.
+
+```
+rows carrying all three    946 of 1000, 54 dropped
+
+quasi identifiers                        k     cells   measured    uniform        gap
+sex                                     21         3     0.0000     0.0000    -0.0000
+sex + postal_code                        1       177     0.0296     0.0047    +0.0249
+sex + postal_code + birth_date           1    164610     1.0000     0.9943    +0.0057
+```
+
+That table is about the 946 patients carrying all three columns. Which population a
+uniqueness figure is about stopped being a detail the day the corpus started writing nulls,
+and the section after this one is why.
+
+`measured` counts rows whose combination is unique. `uniform` predicts the same quantity
+assuming every combination is drawn independently and evenly across the product of the
+column cardinalities, which is `(1 - 1/K) ** (N - 1)` with no approximation and no constant
+in it. The first is a fact about the generator. The second is a fact about combinatorics
+and knows nothing about the data.
+
+Printing both is the point. If they agreed exactly I would have built a corpus that
+satisfies the prediction by construction and measured nothing, so the generator draws
+postal codes on a decaying weight and ages on a curve rather than flat. The busiest postal
+code holds 22.5 percent of the population and the gap column is where that shows up.
+
+Three columns, none of which a flat PII flag would mask, and every one of the 946 people is
+alone in their cell.
+
+Truncating the postal code to three digits and the birth date to a year:
+
+```
+sex + postal 3 + birth year              1      1365     0.2135     0.5003    -0.2868
+```
+
+**That row is not evidence about Safe Harbor and the probe says so out loud.** Clause B
+permits the first three digits of a postal code only where the area those digits cover
+holds more than 20,000 people. This corpus has a thousand patients across five three digit
+areas, the smallest of them 10 people, so the allowance does not apply to it at all. The
+number is correct arithmetic about the corpus and it is not a result about the regulation.
+`pii/safeharbor.postal_3_floor` computes that verdict rather than leaving it to a reader.
+
+Handed the whole corpus it reported six areas rather than five, because the 24 patients with
+no postal code were being counted as a three digit area of their own. A null is not a place.
+It reads the same population as the table above now.
+
+## A null is not anonymity, and the metric disagrees
+
+Every uniqueness figure here counts a null as a value, because that is what a `Counter`
+does. Nobody is protected by this warehouse failing to record their postal code, since
+somebody holding that postal code from elsewhere is not stopped by a gap in this table. So
+the figure moves and nothing about the person has changed.
+
+**Which way it moves was measured rather than argued, and the first version of this section
+had it backwards.** `scripts/crawl_probe.py` sweeps the null rate and prints both
+populations. The last column is the honest share minus the naive one, so a positive number
+means treating nulls as values made the data read safer than it is.
+
+```
+sex + postal_code
+  rate   complete  nulls as a    complete honest minus
+             rows       value   rows only       naive
+  0.00       1000      0.0290      0.0290     +0.0000
+  0.02        964      0.0380      0.0280     -0.0100
+  0.10        803      0.0430      0.0286     -0.0144
+  0.20        624      0.0410      0.0401     -0.0009
+  0.40        350      0.0600      0.1200     +0.0600
+  0.60        154      0.0570      0.2273     +0.1703
+```
+
+A rare null is an uncommon value, so it isolates a row rather than pooling it. At the
+shipped rate of 0.02 the naive figure reads 0.0380 against an honest 0.0280, which is less
+safe and not more. The sign flips somewhere above 0.20, where the null cell finally holds
+enough people to pool them.
+
+```
+sex + postal_code + birth_date
+  0.02        946      0.9940      1.0000     +0.0060
+  0.20        496      0.8400      1.0000     +0.1600
+  0.40        220      0.6520      1.0000     +0.3480
+```
+
+On a combination that is already fully unique the honest figure is pinned at 1.0000 and
+cannot rise, so pooling is the only thing left and the sign never flips. Two combinations
+from the same corpus, moving in opposite directions, for a reason that is about the null
+rate rather than about anybody's privacy.
+
+**Dropping the incomplete rows is not a free fix either.** It shrinks the population, and
+uniqueness depends on how many people are in it. That is why the complete column climbs to
+0.2273 at a 0.60 rate off 154 survivors. Both answers move and for different reasons, so
+both are printed and neither is offered as the number.
+
+`pii/reidentify.generalise_postal` and `coarsen_date_to_year` now refuse a null by name
+rather than raising whatever the language happens to raise on `None`. What a masking policy
+should do with a missing value belongs with the masking work and is not something a generaliser gets
+to make quietly.
+
+## The confidence is the product, and the recall is not
+
+Three arms feed one score. The column name read as tokens, the values counted by the
+database, and the catalog metadata. Each arm produces weighted evidence and the strongest
+category wins, so nothing is decided by whichever rule happened to be checked first.
+
+Against the substring floor, from `scripts/classify_probe.py`:
+
+```
+                                   substring floor   classifier
+in Safe Harbor scope, found               14/20        20/20
+right category                            11/20        20/20
+masked with no human in the loop    all of them        12/20
+flagged and planted not personal              0            2
+```
+
+**Read the first row and then discount it.** I wrote the token rules with the answer key
+open, so 20 of 20 is a report on my memory rather than on the method. Any classifier
+written the same way gets the same number. It is printed because leaving it out would look
+like hiding it.
+
+It reads 19 of 20 in the history and this is the run that moved it, so the mechanism is
+worth a sentence rather than a footnote. The twentieth column is
+`analytics.encounter_daily.day` and nothing about the classifier improved. It stopped
+deleting evidence it already had. See the lineage section below.
+
+The third row is the one that is not circular. The floor has no confidence, so every answer
+it gives carries the same authority: either all 14 columns it finds are masked without
+anybody looking, or none of them are. This classifier masks 12 and sends the rest to a
+person, and the question is whether it sends the right ones.
+
+```
+accept band  15 columns, 0 of them planted not personal
+review band  10 columns, 2 of them planted not personal
+ignored      17 columns, 0 of them in Safe Harbor scope
+
+lowest column masked with no human    0.7500
+highest column the classifier got wrong 0.7250
+margin                                 0.0250
+```
+
+Both mistakes land in the band that goes to a human and nothing wrong is masked
+automatically. That is the result the design is for and the margin is what it rests on.
+Twenty five thousandths, on a scale from zero to one, over forty two columns. I picked the
+accept threshold with both of those numbers on the screen, so the separation is a fact
+about this warehouse rather than a property of the method.
+
+The third line used to read `18 columns, 1 of them in Safe Harbor scope`, and that one
+column was the worst outcome this three band design can produce. A column in scope that
+scored 0.0000 landed in the ignore band, and the ignore band does not queue. It
+reached neither a mask nor a reviewer. It is fixed and the fix was not to make the ignore
+band queue.
+
+The sweep is in the probe. Below 0.73 a column that is not personal starts getting masked,
+and the count of wrongly masked columns is 1 or 2 all the way down to 0.40.
+
+## What the classifier gets wrong, and why neither is fixable here
+
+```
+raw.patient.created_at                         event_date               0.72 review    NOT PERSONAL
+raw.claim.payer_name                           person_name              0.40 review    NOT PERSONAL
+```
+
+`created_at` is the row's load time. `admitted_at`, `discharged_at` and `taken_at` are
+dates tied to a patient, and clause C makes every element of those an identifier except the
+year. All four are timestamps and all four end in `_at`. Three of them have a distinct
+count equal to the row count. **No property of the column separates them.** What separates
+them is where the value came from, and this classifier cannot see that.
+
+One of the two does have a table level answer. A date is tied to an individual when the
+table is about individuals, so a temporal signal is dropped in any table where nothing else
+names a person outright. That removes `analytics.encounter_daily.day`. It cannot remove
+`created_at`, which sits in the patient table beside an email address and a national
+identifier.
+
+**This README used to call `analytics.encounter_daily.day` a reporting grain rather than
+anybody's date, and the group sizes say otherwise.** The mart groups on
+day and department and postal code, and 1,386 of its 1,444 rows are a group of one. In 96
+percent of that table the day is one patient's single admission, sitting in the same row as
+their postal code. The rule that drops the signal still fires and the reason it gave was
+wrong. What it turns on is whether the grouping is coarse enough to hide anybody, and
+nothing in the classifier measures that. **The planted label now reads `event_date` and the
+recall figures above carry the cost.** The denominator went from 19 to 20 and the classifier
+still calls the column not personal, so that is a miss rather than a find. Keeping an
+answer key the data contradicts in order to protect a published number is the trade this
+repo is not going to make. See `scripts/lineage_probe.py` and `scripts/mask_probe.py`.
+
+That rule has a threshold in it and the threshold bit immediately:
+
+```
+ bar     found   masked    wrong  tables treated as about people
+0.35     20/20       12        2  4
+0.60     18/20       12        2  3
+0.70     18/20       12        2  3
+0.75     17/20       12        2  2
+0.90     17/20       12        2  2
+```
+
+At 0.75 `raw.claim` stops counting as a table about people. Its only direct identifier is a
+membership number scoring 0.70, five hundredths under. `raw.claim.submitted_on` then loses
+its only evidence and disappears from the results, so one column sitting in the review band
+deleted a different column's answer. The bar is the review floor for that reason. Demanding
+certainty that a table is about people before conceding that it is runs the wrong way for a
+tool whose job is to find personal data.
+
+## Two of the three arms decide almost nothing, and none of them decides nothing
+
+Removing one arm at a time and counting how many band assignments move. The table below is
+generated by `pii/ablation.py` rather than retyped, and `measurements/arm-ablation.json`
+holds the same reading in a form a check can re-derive.
+
+This one moved to the front page, in the [README](../README.md).
+
+**The name arm is the one this warehouse turns on.** Sixteen bands move without it and
+recall falls from 20 of 20 to 10 of 20. The value arm moves two. The structure arm moves
+one.
+
+That one is worth naming. For a while this file said the structure arm moved no band
+anywhere while the row directly above the sentence said it moved one. The column is
+`analytics.encounter_daily.day`. It carries no token the name arm knows and no value any
+predicate can see, so the catalog type is its whole evidence. Round two further down this
+file exists to stop that evidence being deleted. Take the structure arm away and round two
+has nothing left to rescue, and the lineage result this repo is organised around flags no
+column at all.
+
+So no arm here is free to delete. `tests/test_ablation_warehouse.py` asserts that and
+fails if a later change makes an arm free. The point of moving the measurement into a
+module was to stop the finding living in a paragraph, where this one was wrong for three
+weeks.
+
+What survives from the original reading is narrower and still uncomfortable. On this
+warehouse the confidence is mostly a restatement of how sure I was when I wrote the token
+list. That is not an argument for deleting the other two arms. It is an argument that a
+warehouse with meaningful column names is the easy case, and the honest way to show what
+the other arms are worth is to take the names away:
+
+```
+in Safe Harbor scope, found        10/20
+right category                     8/20
+masked with no human in the loop   3/20
+flagged and planted not personal   1
+
+  raw.patient.c12              was ssn                    called national_id            0.89
+  raw.patient.c05              was email                  called email                  0.88
+  raw.device_reading.c07       was source_ip              called ip_address             0.83
+  raw.encounter.c06            was attending_npi          called phone                  0.69  planted licence_number
+  raw.patient.c06              was phone                  called phone                  0.68
+  analytics.encounter_daily.c01 was day                    called event_date             0.45
+  raw.device_reading.c04       was taken_at               called event_date             0.45
+```
+
+Same rows and same types and same nulls. The column names are replaced by position labels
+and the whole thing is rebuilt as a real database rather than stubbed out in Python. Recall
+falls from 19 to 9 and automatic masking from 12 to 3. Ten digits is ten digits, so a
+clinician licence number and a telephone number come back as the same thing, and only the
+name ever told them apart.
+
+## Lineage answers a question the classifier cannot, and it is a smaller question than I thought
+
+The classifier decides one column at a time on properties of that column. `pii/lineage.py`
+builds the other view: nodes are columns and edges are derivations, recovered from the
+statement that loads the mart rather than from an edge list written beside it. A hand
+written edge list is the circularity the crawler was built to break.
+
+```
+raw.encounter.admitted_at              -> analytics.encounter_daily.day          cast       cast to DATE, grouping key
+raw.encounter.department               -> analytics.encounter_daily.department   grouped    grouping key
+raw.patient.postal_code                -> analytics.encounter_daily.postal_code  grouped    grouping key
+raw.encounter.*                        -> analytics.encounter_daily.encounters   aggregate  row count over the join grain
+raw.patient.*                          -> analytics.encounter_daily.encounters   aggregate  row count over the join grain
+raw.encounter.admitted_at              -> analytics.encounter_daily.mean_length_of_stay_h aggregate  avg over the group
+raw.encounter.discharged_at            -> analytics.encounter_daily.mean_length_of_stay_h aggregate  avg over the group
+7 derivation edges, 0 refusals
+```
+
+**The kind on the edge is the whole design.** A grouping key is not an aggregate. A
+`GROUP BY` drops duplicate rows and leaves the values in the key exactly as they were, so a
+postal code that was a postal code in `raw.patient` is the same postal code in a table
+whose name suggests it has been rolled up. Copies and casts and grouping keys carry the
+label down. Aggregates do not.
+
+**The reader refuses rather than guesses.** It refuses a star and a common table expression
+and a set operation. It refuses a window function and a subquery in the FROM clause. It
+refuses an unqualified column with two sources in scope. Each returns a refusal naming what
+it could not read. A lineage edge that is wrong gets a column masked or unmasked on evidence
+nobody checked. A refusal gets a human.
+
+### It reaches five columns out of forty two
+
+```
+42 columns, 37 of them roots with nothing upstream
+5 columns have an upstream, which is 11.9 percent
+```
+
+That is the number I did not expect and it is the honest headline for this layer. Every raw
+table here is loaded rather than derived, so there is no statement to read and no upstream
+to ask. A lineage graph on this warehouse describes one mart.
+
+**It does not settle `created_at` against `admitted_at`, which is what it was supposed to
+do.** The classifier leaves those two columns indistinguishable by any property either one
+carries, and the obvious conclusion was that the thing separating them is where the value
+came from. That is right and it does not help. Neither column came from anywhere this repo
+can see.
+Both are roots. Lineage propagates what somebody already knew at the source, and at the
+source nobody knew.
+
+### Where it does earn its place
+
+Strip the mart's column names and the classifier has nothing left:
+
+```
+column                       on its own               from upstream
+scratch.rollup_v2.d1         not_personal (ignore)    event_date
+scratch.rollup_v2.grp        not_personal (ignore)    not_personal
+scratch.rollup_v2.geo        not_personal (ignore)    postal_code
+scratch.rollup_v2.n          not_personal (ignore)    not_personal
+scratch.rollup_v2.dur        not_personal (ignore)    not_personal
+2 columns that read as not personal on their own are personal upstream
+```
+
+Every one of those five scores 0.0000 with no signal of any kind. There is no value
+predicate for a postal code in this repo, so `raw.patient.postal_code` is caught by its name
+and by nothing else. Rename it to `geo` in a mart and the classifier goes silent. Upstream
+still knows.
+
+On the real mart, which kept its column names, propagation changes one answer out of forty
+two. That one is `analytics.encounter_daily.day`.
+
+### The aggregate that does not aggregate
+
+```
+1444 rows in the mart, encounters between 1 and 3
+1386 of them are a group of one, which is 96.0 percent
+```
+
+The mart groups on day and department and postal code, and that grain is almost unique. In
+96 percent of the table, a row is one patient's one admission with their postal code beside
+it. Calling `encounters` an aggregate is true about the function and false about the result.
+
+This is what settled the `day` column. The classifier drops its temporal signal because
+nothing in the mart names a person outright, and the planted label used to agree with the
+classifier. Lineage disagreed with both and the group sizes were on lineage's side, so the
+label moved to `event_date`. The substring floor finds the column the classifier walked
+past, because the phone regex matches an ISO date and the floor has no table context rule to
+talk itself out of it. Being right for no reason still counts in the numerator, which is one
+more thing a single recall figure hides.
+
+### The classifier reads the lineage graph now, and the fix was to delete less
+
+Moving the label exposed something worse than it settled. `analytics.encounter_daily.day`
+was in Safe Harbor scope, the classifier scored it 0.0000, and 0.0000 is the ignore band.
+The ignore band does not queue. So the column reached no mask and no reviewer, which is the
+worst outcome a three band design can produce, and it was live in this repo for a day.
+
+There were two obvious shapes for a fix and both are wrong.
+
+Queue any column in Safe Harbor scope regardless of its band. That grades the tool against
+my own planted answer key at runtime, which makes every figure downstream circular.
+
+Feed a k measurement on the grain into the confidence so the column earns its score. That
+is the deeper answer. It was built on 2026-10-12 and it is the section after this one, and
+the k turned out to be the wrong statistic.
+
+The third option was in a docstring the whole time. `table_is_person_linked` asks whether
+anything in a table names a person outright, and its own comment already said the honest
+version is following the column back to its source. So `classify_warehouse` runs twice now.
+Round one is every table on its own columns, unchanged. Round two re-runs any table that
+came back naming nobody, if the tables it was derived from do name somebody, and the
+lineage graph is what answers that.
+
+**Round two adds no evidence. It stops deleting evidence.** The rescued score is exactly
+the score the column earns with no table rule at all, and a check asserts that the two are
+equal signal for signal, because a classifier that invented a number for a column on the
+strength of its parentage would be the circular version wearing different clothes.
+
+```
+band counts {'accept': 15, 'review': 10, 'ignore': 17}
+rescued by lineage: analytics.encounter_daily
+```
+
+One column moved. `day` scores 0.4319, which is the review band, so a person decides. The
+undiscounted rescue scored it 0.4500 and the next section is what took the two hundredths
+off. The catalog alone does not say whether a group of one survived the `GROUP BY`, so the
+tool asks rather than answers, and what makes the question answerable for a reviewer is the
+lineage trace printed beside it.
+
+The closure is value preserving only. A `GROUP BY` key is value preserving and that is the
+case that matters here. An aggregate is not, so a mart built only out of counts does not
+answer for the table it counted.
+
+**Recall went 19 of 20 to 20 of 20 and that number is worth less than it looks.** The
+column that moved it is flagged on one structural signal and sits in the band that means
+the tool declined to decide. Take the structure arm away and it drops back to 19 of 20,
+which is the internal evidence that the mechanism is the one described and not a
+coincidence.
+
+It also made the residual report worse before better. The mart was the one table
+`residual_sql` could measure, and it was measuring it over a set that was missing a column
+in scope. Now the mart has an undecided column in it, so it refuses like the other four.
+All five tables wait on a reviewer.
+
+```
+python3 scripts/lineage_probe.py --db /tmp/pii.duckdb
+```
+
+There is an interaction here worth naming rather than smoothing over. `lineage_probe.py`
+measures what propagation adds on top of a column's own answer, and a column's own answer
+can now be lineage informed. So that section deliberately classifies without the graph. A
+comparison that passed the graph to both sides would be measuring a lineage informed answer
+against a lineage informed answer and calling the difference the value of lineage.
+
+## The rescue was a necessary condition spending a sufficient one
+
+Round two above keeps a mart's temporal evidence when the tables it came from name people.
+Being built out of a table full of patients is a necessary condition for a mart date to be
+one patient's date. It is not a sufficient one, and until 2026-10-12 the code treated it as
+one. Every derived table got the same 0.4500, whatever its `GROUP BY` had done.
+
+That was defensible on this warehouse and only on this warehouse. 1,386 of 1,444 mart rows
+are a group of one, so the day really is one person's admission. Group the same encounters
+to a month and a department and no row is anybody, and the rescue would have queued the
+column anyway on the strength of its parentage.
+
+**So the condition is scored now, and the score is a measurement.** `pii/grain.py` sends
+one statement per table and gets four integers back. The row count, the number of people
+those rows cover, the minimum group size and the number of rows standing for exactly one
+person. No value from a user column crosses the
+boundary, which is the same guarantee the profiler keeps. The share of rows standing for
+one person multiplies the temporal signal's strength, so a rescued column earns a number
+rather than inheriting one.
+
+The group size column comes off the lineage graph. `mask.weight_for` finds it by looking
+for an `AGGREGATE` edge whose source is a literal `*`, and it refuses rather than guesses
+when a table offers two candidates. Measuring the mart by row count instead reports a
+share of 1.0000 against the real 0.9598, which is the failure that discriminator exists to
+stop. It also refuses when the lineage reader did not finish reading what builds the
+table, which is covered in the limitations.
+
+### k was the statistic I planned to use and it cannot do the job
+
+The plan was a k on the grain. k is `min` over every group in the table, so one group
+of one holds it at 1 and the other fourteen hundred stop counting. To show that, the same
+encounters were regrouped twice and the whole path run again. The lineage read, then the
+weight column lookup, then the grain and the classifier. Nothing was told the answer.
+
+```
+table                                 rows    k    share  scored band      binary band
+analytics.encounter_daily             1444    1   0.9598  0.4319 review    0.4500 review
+analytics.encounter_day_dept           894    1   0.5246  0.2361 ignore    0.4500 review    <- moved
+analytics.encounter_month_dept          53    2   0.0000  0.0000 ignore    0.4500 review    <- moved
+
+k tells the bands apart              NO
+the singleton share tells them apart yes
+```
+
+The first two tables share a k of 1 and end in different bands. A rule reading k would have
+kept the binary it was meant to replace, and it would have looked like a measurement while
+doing it. The share has resolution because it reads the whole distribution instead of its
+worst point.
+
+The binary rescued all three at 0.4500. Two of the three should never have been rescued and
+nothing in the old code could tell.
+
+### The discount puts a floor under the rescue, and the floor is 0.7778
+
+The review band opens at 0.3500 and the structure arm's temporal rule is worth 0.4500, so a
+rescued column queues only when more than 0.7778 of the table's rows stand for one person.
+`grain.rescue_floor` derives that from the two constants and two checks pin it, one against
+the constants and one that builds a share just under the floor and asserts the ignore band.
+
+This was derived rather than swept, and the profiler work is the reason. A threshold
+was swept there across eleven settings and could not move a verdict at any of them, because
+the same multiply had put a floor under it that nobody had worked out first.
+
+The floor has a consequence worth stating plainly. A mart where 0.5246 of rows are one
+patient lands in ignore. More than half its rows are a person and the tool says nothing.
+That is not the discount being wrong, it is 0.4500 being a weak signal that cannot survive
+a 22 percent haircut, and the honest reading is that the structure arm alone was never
+enough to carry a column on its own.
+
+### Why this is not a wrapper around the k that was already here
+
+`pii/mask.py` measures k over a masked grain and it refuses to run while any quasi
+identifier of the table sits in the review band. The column this measurement exists to
+decide is the one in the review band. Run it and the refusal names
+`analytics.encounter_daily.day` by address, so the downstream measurement cannot inform the
+upstream decision. A check asserts that refusal still happens, because a refusal that
+quietly stopped firing would make this whole module redundant with nothing failing.
+
+```
+python3 scripts/grain_probe.py --db /tmp/pii.duckdb
+```
+
+The probe copies the database before it builds anything, so the warehouse it was pointed at
+is left as it was found. That is not politeness. Two extra tables left behind change the 42
+column figure every other section here publishes, which is how the first run of this probe
+produced a compliance report with 62 questions in it instead of 58.
+
+`grain.classify_shipped` is the one place the graph, the upstream map and the grain now come
+together. Six call sites used to build the upstream map from the same profiles and agree by
+luck, and adding a third thing every one of them needed is what would have made a seventh
+copy inevitable.
+
+## What round two costs, and my guess was wrong about where
+
+The question was what the second round costs on a warehouse wider than this one. My guess
+was that the cost is database round trips, because the value arm sends a query per
+column. The first half was right and the second half was not, and finding that out took
+one counter.
+
+Round two sends no statements at all. The value arm reads counts off a `ColumnProfile` that
+`pii/profile.py` already built, so by the time the classifier runs there is no connection in
+reach. A counting wrapper around the connection sees zero statements through a full
+`classify_warehouse` over all 42 columns, and a check pins it.
+
+```
+python3 scripts/roundtwo_probe.py --db /tmp/pii.duckdb
+```
+
+What round two did cost was the arms running twice over the same profiles. It called
+`classify_table` again for a rescued table and threw the first answer away. On the shipped
+warehouse that is 47 column classifications where 42 would do.
+
+```
+tables round two rescues           1 of 5
+arm runs, one pass                 42
+arm runs, re-profiling round two   47
+share of them that was the repeat  0.1064
+statements classify_shipped sends  2
+  before 2026-10-13, every table   6
+```
+
+`classify.settle_table` is the fix and it is a split rather than a cache. The second pass
+reads signals and never reads a profile for anything but the column address, so round one's
+signals are enough and round two re-decides from them. `classify_table` is that split run
+end to end and the behaviour is unchanged. A check asserts the two give identical results on
+every column, every `person_linked` setting and three discounts.
+
+### The repeat does not grow with the warehouse, which is why the saving is small
+
+The repeat is bounded by how many tables round two rescues. A warehouse grows its ordinary
+tables and not its derived ones, so the repeat shrinks as a share of the work as the
+warehouse widens. Held at 3 rescued tables, it is 35 percent of the arm runs at 5 tables and
+0.7 percent at 400.
+
+The other extreme is the one worth measuring, so the probe measures it too. Every derived
+table rescued, which is the worst case the shape allows. The call count is the published
+figure because it is the same on any machine.
+
+```
+ tables   columns   one pass   repeated
+      5        11         11         19
+     25        51         51         99
+    100       201        201        399
+    400       801        801       1599
+```
+
+The wall time does not halve with the call count, because the second pass still runs in both
+shapes and only the arms came out of it. At 400 tables and 801 columns, over 7 trials of 9
+passes each in the cloud container, the memoised path ran 10.36 to 17.72 ms against 24.01 to
+29.14 for the reprofiling one. The ratio those trials give is 1.35 to 2.38. The call ratio is
+exactly 2.00 and it sits inside that spread, so a wall time on two shared cores cannot
+resolve what the call count states exactly. That is why the table above carries no
+milliseconds and why the committed manifest carries none either.
+
+The counts are in `measurements/roundtwo-cost.json` and a check re-derives every one of
+them. Regenerate it with the line below, which is the shape every other measurement in this
+repo is committed under.
+
+```
+python3 scripts/roundtwo_probe.py --db /tmp/pii.duckdb --manifest measurements/roundtwo-cost.json
+```
+
+### The cost that does grow was the grain map, and it was opened as the smaller half
+
+I first wrote this down as a known risk next to the round two question. It is the bigger
+of the two. `grain.confidence_map` was built for every table in the warehouse before a single
+column was classified, and round two is its only consumer. On a warehouse of 400 tables that
+is 403 statements paid up front so that 3 of them can be read.
+
+It was also understated. I had said one statement per table. A table the graph says was
+grouped costs two, because `witness_for` checks the weight column against the catalog before
+it sends the grain query. An ungrouped table costs one. A check pins both.
+
+`grain.classify_shipped` now hands `classify_warehouse` a function instead of a map.
+`classify_warehouse` works the rescued set out of round one and calls it once with that set.
+The dict form still works and is what the sweeps and the checks pass, because a caller that
+already holds measured numbers should not have to wrap them in a lambda.
+
+```
+ tables   rescued     eager     lazy   saved   per table
+      5         3         8        6       2        1.60
+     25         3        28        6      22        1.12
+    100         3       103        6      97        1.03
+    400         3       403        6     397        1.01
+```
+
+The rescued column is held at 3, which is why the lazy column does not move. The per table figure falls
+towards 1.00 because the marts are the only tables costing two statements and they stop
+being a meaningful share of the warehouse.
+
+On the shipped warehouse `classify_shipped` went from 6 statements to 2. That is the whole
+measured saving here and it is four statements. The number worth reading is the 397 at 400
+tables, and the synthetic fixture is the only reason there is a number at all.
+
+### The fixture's key flags decide what the rescue finds, not what it costs
+
+One field of the fixture turned out to matter and its docstring had said it did not.
+`classify.structure_signals` returns nothing for a key column, so a column marked as a key
+emits no temporal evidence at all. Mark every column in the fixture a key and the three
+mart day columns fall from 0.45 to zero.
+
+Round two still rescues the same three tables. The rescued set comes off the upstream table
+being person linked and the person table is linked by its email either way. What changes is
+that the rescue has nothing left to restore. The arm counts are identical across both runs.
+
+So round two costs the same whether it recovers three columns or none. A warehouse where the
+rescue never fires pays the full double pass to find that out. That is the case this
+measurement did not set out to look at and it is the one most likely to be true of a
+warehouse somebody else owns.
+
+### What this does not measure
+
+Profiling. Building the profiles is one query per column or one per table and `pii/scale.py`
+measures both. The fixture below builds its profiles in Python so the profiler's
+cost does not land on top of round two's and get read as part of it. A real run pays both and
+the profiler is by far the larger.
+
+The fixture's lineage graph is built as edges by hand rather than parsed out of SQL, because
+400 synthetic marts have no statements worth parsing. A check asserts the weight column it
+names is a column the table carries, since a hand built graph naming a missing column is the
+stale lineage failure `witness_for` started refusing on 2026-10-12 and it would read as a
+fixture bug.
+
+## The policy is the easy half
+
+`pii/mask.py` turns a classification into an action and the action into SQL. Then it applies
+the SQL and measures how many people are still alone afterwards. The first three steps are a
+lookup and a string. The fourth is the only part that can contradict anything, and it does.
+
+```
+python3 scripts/mask_probe.py --db /tmp/pii.duckdb
+```
+
+Over the forty two columns:
+
+```
+  redact       9
+  generalise   3
+  retain       20
+  review       10
+```
+
+A direct identifier is redacted, because it names somebody by itself and has no coarser form
+that stops doing so. A quasi identifier with a granularity threshold is generalised to what
+the clause list permits. A sensitive attribute is retained, because a diagnosis is not an
+identifier and redacting it protects nobody who has not already been picked out by the quasi
+columns beside it. The review band gets a person, and asking for its masking expression
+raises rather than quietly returning the raw value.
+
+### Where the clause list is stricter than my own taxonomy
+
+```
+temporal: the taxonomy would allow month and Safe Harbor permits only year
+```
+
+The taxonomy says a temporal category identifies at day precision, which makes a month non
+identifying by its own ordering. Clause C removes every element of a date except the year,
+so a month does not survive either. Deriving the masking target from my own threshold would
+have published a policy that keeps months and calls itself Safe Harbor. The target is written
+down separately, the clause wins, and a check pins the disagreement so neither half can move
+without the other being looked at.
+
+### Most of the warehouse is kept because nothing fired
+
+```
+17 of 42 columns are kept because no rule fired, not because anything is known
+```
+
+That is what the no values rule costs, as a number rather than as a caveat. `pii/profile.py`
+never lets a value reach the process, so the classifier can only count matches of patterns it
+already holds, and a format nobody wrote a predicate for scores zero on all of them. The
+column then lands in exactly the same bucket as one that was genuinely cleared. One of the
+eighteen is planted as something personal.
+
+### The residual risk report is mostly blank, and that is correct
+
+```
+5 of 5 tables cannot be measured at all until somebody works the review queue
+that is the honest state of this report and it is not a bug. a k computed
+around an undecided column is a k for a policy nobody has agreed to.
+```
+
+A k computed around an undecided column is a k for a policy nobody agreed to, so
+`residual_sql` refuses rather than measuring around it. All five tables are waiting on a
+reviewer. With a reviewer accepting every queued column, which nobody did and which is an
+upper bound rather than a result:
+
+```
+  table                             k   groups      alone  quasi set
+  analytics.encounter_daily        20        6    0.0000  day, postal_code
+  raw.claim                        31        2    0.0000  submitted_on
+  raw.device_reading             3043        1    0.0000  taken_at
+  raw.encounter                    22        2    0.0000  admitted_at, discharged_at
+  raw.patient                       1      788    0.6170  city, postal_code, birth_date, sex, created_at
+```
+
+`raw.patient` comes back at k of 1 with 61.7 percent of patients alone in their group, after
+every generalisation the regulation permits.
+
+**This line read four of five until the day column came into reach.** The mart used to be
+the one table the report could measure, and it measured it over a set missing a column in
+Safe Harbor scope. So the published k of 20 was a number about the wrong set, and making
+the tool see the column turned a confident figure into a refusal. That is the report
+getting better. A governance tool that answers where it should decline is worse than one
+that declines everywhere, because the confident answer is the one somebody acts on.
+
+### The number is a claim about a set somebody chose
+
+The mart reports a comfortable k, and the set it was measured over has one column in it.
+
+```
+  quasi set                         k   groups      alone
+  what the policy measured         20        6    0.0000
+  plus the day, generalised        20        6    0.0000
+  plus department                   1       35    0.0007
+```
+
+`department` is planted not personal. The classifier agrees. It is on no clause list
+anywhere. It still takes the table from k of 20 to k of 1. The residual figure was
+arithmetically correct and it was answering a question about the wrong set, because the set
+came from a classifier that had already missed a column. This is the same shape as the
+taxonomy's two axes: whether a column is personal is not a property of that column.
+
+### What the masking bought on the table that can be measured
+
+This one moved to the front page, in the [README](../README.md).
+
+Every permitted generalisation applied in full takes `raw.patient` from 99.4 percent of
+people sitting alone to 23.8 percent, and k is still 1. **Satisfying Safe Harbor and
+protecting the people in the table are different properties.** A tool that generates the
+policy and stops has reported the first one and said nothing about the second.
+
+## The review queue is the part a confidence score cannot do
+
+The review band has been a count since the classifier existed. Ten columns score between
+the two thresholds and the tool says so and stops, which is where most classifiers stop.
+What a reviewer needs is not the list.
+
+`pii/review.py` builds the queue, and the ordering is the design decision in it.
+
+```
+  pos   frees   blocks  distance  column
+    1       1        1    0.0250  raw.device_reading.taken_at
+    2       0        2    0.0250  raw.encounter.admitted_at
+    3       0        1    0.0500  raw.claim.member_number
+    4       0        1    0.2244  raw.encounter.attending_npi
+    5       0        1    0.3500  raw.claim.payer_name
+    6       0        1    0.0250  raw.claim.submitted_on
+    7       0        1    0.0250  raw.encounter.discharged_at
+    8       0        1    0.0250  raw.patient.created_at
+    9       0        1    0.1500  raw.patient.city
+   10       0        1    0.3000  analytics.encounter_daily.day
+```
+
+Sorting a review queue by confidence sorts it by how close the machine got, which is a
+fact about the machine. `residual_sql` refuses to measure a table holding an undecided
+column, so a review can be the only thing standing between a table and any residual figure
+at all. That is what the queue is ordered on.
+
+**The first version of that ordering did not work and the output is how I found out.** It
+sorted on blocked tables, and a review blocks the table it lives in by definition, so eight
+of the ten tied at one and the order was the alphabet with extra steps. `frees` is the
+column that separates them: a table waiting on three reviews is freed by none of them
+individually, and a table waiting on one is freed the moment somebody answers it. Exactly
+one item in this queue frees a table on its own, and nothing about its confidence or its
+category says so.
+
+Each item carries the evidence, and for a derived column the trace is the part that makes
+it answerable:
+
+```
+10. analytics.encounter_daily.day  candidate event_date at 0.4500
+  question   is this column personal data
+  short of   the accept threshold by 0.3000
+  evidence   structure event_date             0.4500  catalog type DATE is temporal
+  came from  raw.encounter.admitted_at
+  waits with others on analytics.encounter_daily
+```
+
+A reviewer handed a mart column called `day` with a catalog type and nothing else would
+reasonably call it a reporting grain and be wrong. The `came from` line is what changes the
+answer.
+
+Decisions are recorded rather than applied and forgotten. A reviewer and a date and a
+reason, all three required by the constructor. An unattributed decision with no reason is
+the row an auditor asks about and nobody can answer six months later.
+
+```
+  2026-09-22  analytics.encounter_daily.day                personal     s.hussain  1386 of 1444 mart rows are a group of one, so the day is one admission
+  2026-09-22  raw.device_reading.taken_at                  personal     s.hussain  a reading is tied to an encounter and through it to one patient
+  2026-09-22  raw.patient.city                             personal     s.hussain  a geographic subdivision smaller than a state, which clause B covers
+  2026-09-22  raw.patient.created_at                       not personal s.hussain  the row's load time, which is not tied to anything the patient did
+```
+
+Four decisions out of ten unblock two of the five tables:
+
+```
+  tables now measurable: raw.device_reading, raw.patient
+  tables still blocked:  analytics.encounter_daily, raw.claim, raw.encounter
+```
+
+The mart needed two decisions rather than one, because `raw.encounter.admitted_at` is
+carried into it and `day` is its own review. A table is reported unblocked only when every
+review against it is answered. Anything looser would promise a residual number
+`residual_sql` then refuses to produce.
+
+`apply` refuses a decision for a column that is not in the queue, and refuses two decisions
+for one column rather than taking the later one. Which of two conflicting reviews wins is a
+policy question about an organisation, not something a function gets to assume.
+
+```
+python3 scripts/review_probe.py --db /tmp/pii.duckdb
+```
+
+## Who could have read this column, and did they
+
+Two questions, two sources, and the gap between them is the report. Permission comes from
+grants and is true whether or not anybody used it. Use comes from query history. An
+auditor asks the first and a breach notification turns on the second.
+
+`pii/access.py` answers both. The grants and the query log are generated in `pii/corpus.py`
+and not in the module that measures them, for the same reason the schema stopped being its
+own witness.
+
+Here is what a table level access review produces, which is what most organisations have:
+
+```
+  analyst_bi           dpatel, rkhan, tovborg       analytics.encounter_daily
+  analyst_clinical     jruiz, mchen                 analytics.encounter_daily, raw.device_reading, raw.encounter
+  auditor_readonly     lokafor, rkhan               raw.claim
+  engineer_etl         swhite                       analytics.encounter_daily, raw.claim, raw.device_reading, raw.encounter, raw.patient
+```
+
+`analyst_bi` holds the mart and nothing else. A least privilege review calls that a well
+scoped role. It is the finding.
+
+```
+  raw.encounter.admitted_at: 3 direct, 3 more through analytics.encounter_daily.day
+  raw.patient.postal_code: 1 direct, 5 more through analytics.encounter_daily.postal_code
+```
+
+**One user is granted `raw.patient` and six read a patient's postal code.** The mart's
+grouping keys are copies, so a role with SELECT on the mart and nothing else reads the
+value. A grant review says that role has no access to `raw.patient`, which is true, and
+reading it as "cannot see patient postal codes" is wrong.
+
+```
+  raw.encounter.admitted_at                  dpatel, rkhan, tovborg
+  raw.patient.postal_code                    dpatel, jruiz, mchen, rkhan, tovborg
+```
+
+Five of the six who read the postal code hold no grant on the table it lives in. Put the
+two columns together and that is a postal code beside an admission date, on a grain where
+96 percent of rows are one person.
+
+The clearest version is two columns from the same table:
+
+```
+      1      0        0  raw.patient.mrn
+      6      6        0  raw.patient.postal_code
+```
+
+Could, did, and granted but unused. Identical grants, identical role list, and one is
+reachable by six people and the other by one. The difference is not in `raw.patient` at
+all. `postal_code` is a grouping key in the mart and `mrn` is not, and no access review
+that reads grants per table can see that.
+
+The `unused` column is zero for every row over the full range, which is the number a
+revocation would cost. It is not zero over a shorter one.
+
+The closure has to stop somewhere or the report is noise. `encounters` is a row count
+derived from every column in `raw.encounter`, and closing over aggregate edges would report
+that reading a count exposes every patient identifier that was counted. A count is derived
+from values it does not carry.
+
+Where it stops is the one design decision in the module, and the first version got it
+wrong. It used `VALUE_PRESERVING`, which is the set `pii/lineage.py` uses to decide whether
+a *label* propagates, and that set excludes `TRANSFORM`. A transform is any call the reader
+could not classify further. `upper(name)` is a transform and it still names the person.
+`sha256(name)` is a transform and it does not. The reader cannot tell them apart, so one of
+the two errors has to be chosen.
+
+For label propagation the safe error is to claim less, because inheriting a granularity
+through a transform is a claim about the value's shape. For an exposure report it runs the
+other way. Saying a column might have been reachable and being wrong costs a reviewer some
+time. Saying it was not reachable and being wrong is a sentence in a breach notification.
+So `access.CARRIES_A_VALUE` is `VALUE_PRESERVING` plus `TRANSFORM`, and the two sets differ
+by exactly that one kind.
+
+**No figure in this section moved when that changed**, because the mart is built with no
+transform edge in it, and a check asserts that so the next person to add one is told to
+re-capture. The checks are the only evidence the fix works, which is worth knowing about a
+fix whose whole justification is the case the sample data does not contain.
+
+### The window decides the answer
+
+```
+  window   queries   stars   unused grants       star only
+      3d         6       1               4               3
+      7d        21       6               0              18
+     14d        43      12               0              14
+     30d       103      27               0              22
+     60d       205      47               0              16
+    113d       400      95               0              30
+```
+
+`unused grants` is the number a least privilege review acts on. Over three days it
+recommends revoking from four users who have simply not run a query yet, and the
+recommendation disappears entirely as the window grows. It is a property of the log's
+length and it reads like a property of the users. Anyone running a quarterly access review
+against a thirty day retention window is reading the first row and calling it the last.
+
+### A query log cannot answer the question it is asked
+
+```
+  95 of 400 queries named a table and no column
+  617 column references across the rest
+```
+
+A `SELECT *` records no column, so column level attribution is a floor rather than a count.
+
+```
+     did     at most    only by star  column
+       0           1               1  raw.patient.ssn
+       0           1               1  raw.patient.mrn
+       0           3               3  raw.encounter.clinical_note
+       6           6               0  raw.patient.postal_code
+```
+
+Four rows of the twenty five, picked to show the shape. For **sixteen** of the twenty five
+flagged columns `did` is zero and `at most` is not, which means the honest answer to "did
+anybody read the SSN column" is "between nobody and one person". That is the question a
+breach notification turns on and this report cannot close it.
+
+I wrote fourteen there first, by reading the table rather than counting it. The count is in
+`scripts/access_probe.py` now for the same reason every other figure here is in a script.
+
+Closing it needs the star expanded against the catalog as it stood on the query's date.
+This warehouse keeps no catalog history, and expanding against today's catalog would
+attribute a column to a query that ran before the column existed. So both ends of the
+interval are printed and neither is called the number.
+
+```
+python3 scripts/access_probe.py --db /tmp/pii.duckdb
+```
+
+## The report an auditor gets, and the twenty five answers in it
+
+Everything above is a probe. A probe is a thing I run to find out whether I was wrong. The
+artefact somebody outside this repo actually receives is one document, and
+`pii/compliance.py` assembles it out of the modules that already have checks behind them.
+It classifies nothing and measures no k of its own.
+
+```
+python3 scripts/compliance_report.py --db /tmp/pii.duckdb --out docs/sample-compliance-report.md
+```
+
+The committed output is in [`docs/sample-compliance-report.md`](sample-compliance-report.md)
+and the header is the whole design:
+
+```
+**25 of 58 questions answered. 33 refused, and 31 of those close when somebody does something.**
+```
+
+Fifty eight questions, twenty five answers. I expected that number to embarrass me when I
+first printed it and it is the most defensible thing in the repo.
+
+### A refusal is a record
+
+The modules underneath already decline to answer things. `mask.residual_sql` raises rather
+than measure k around a column nobody has decided. `access.unanswerable` returns the
+columns where the query log gives a floor of zero under a ceiling above it. Both refusals
+are correct, and on the way into a document both of them turn into whitespace, because a
+renderer writes the rows it has and says nothing at all about the rows it does not have.
+
+So a refusal is a dataclass. It carries the question and the subject it is about. Then why
+the tool will not answer it and what would close it.
+
+```
+`raw.patient` what is the smallest group left after masking? cannot measure residual risk
+on raw.patient while raw.patient.city is unresolved. Closes when the columns it names are
+decided in the review queue.
+```
+
+Thirty three of those, from four distinct questions:
+
+```
+  16  did anybody read this column
+   2  is this clause satisfied
+  10  is this column personal data
+   5  what is the smallest group left after masking
+```
+
+The grouping matters more than the total. Thirty three refusals reads as a broken tool.
+Four questions refused thirty three times reads as what it is, which is a small number of
+missing facts about the input, repeated once per subject.
+
+### The field that made me lie
+
+`closes_when` is required, and requiring it was right for thirty one of them and wrong for
+two. Safe Harbor clause E is fax numbers, which this taxonomy folds into telephone numbers
+because a fax number and a phone number are the same string. Clause R is "any other unique
+identifying number, characteristic or code", whose membership is a property of the values
+rather than of the column.
+
+Neither closes. Nothing anybody does to this tool closes them. But the field was a required
+string, so the first version of the report told a reader that both would close when the
+taxonomy gained a category, which is a promise I had no business making and which would not
+have helped either clause.
+
+`DOES_NOT_CLOSE` is a value now rather than a sentence, so the header can count them and a
+reader can tell a backlog from a boundary. Thirty one of the thirty three are work somebody
+has not done. Two are facts about what a scan driven by metadata can represent at all.
+
+### The document is graded against the data it came from
+
+Every other check in this repo compares a structure against another structure, and both
+sides come out of the same builder, so none of them can catch a renderer quietly dropping a
+section. `compliance.undelivered` takes the report and the rendered text and returns the
+refusal subjects the text does not name. One side is a tuple and the other side is English.
+
+It refuses to run on a report that refused nothing, because a check with an empty left hand
+side passes having compared nothing, and that has been the single most common defect in
+this whole repo.
+
+The script runs the control on every invocation. It renders a second time with the
+refusals deliberately dropped and fails if that is not detected.
+
+```
+checked 33 refusals survived rendering, control named 18 subjects when they were dropped
+```
+
+Eighteen rather than thirty three, because the subjects repeat across questions.
+
+A separate check rebuilds the whole report from a fresh warehouse and compares it against
+the committed file line by line. The document in `docs/` is the only published thing here
+that nobody reads daily, which makes it the one most likely to be quietly wrong.
+
+## The scanner never reads a value
+
+`pii/profile.py` sends predicates down to the database and gets counts back. What crosses
+the boundary is `976 of 983 non null values match this pattern` and never the 976 values.
+`ColumnProfile` holds its address, its catalog metadata and integers, and a check walks the
+dataclass fields rather than trusting the paragraph that says so.
+
+The cost is real. A classifier that can only count matches of patterns it already holds
+cannot find a pattern nobody wrote down, so a passport number in an unfamiliar format
+returns zero on every predicate and falls back to the name arm. Sampling would find it.
+Sampling would also mean a tool pulling personal data out of the warehouse it was pointed
+at in order to decide whether that data is personal. The rows would then be in the process.
+They would be in a traceback, and in whatever the caller did next.
+
+The floor does sample, which is why `pii/naive.py` was the only thing in the repo that read
+a value for a long time. `pii/sample.py` is the second, it is off by default, and the
+section below is what it cost to find out what the refusal was worth.
+
+## What the refusal costs, measured twice
+
+`pii/sample.py` is an opt-in fourth arm. `classify.ALL_ARMS` does not contain it, so a
+caller who leaves the argument out gets the three arms that never read a value. Asking for
+it means asking for `ARMS_WITH_SAMPLING` by name.
+
+What crosses the boundary once it is on is a shape. Every letter becomes `A` and every digit
+becomes `9` and a separator from a short allowlist survives, so `AB1234567` arrives as
+`AA9999999`. That is a projection and not a redaction. The honest summary is that the no
+values property is now a no values modulo a projection property, which is weaker, and
+`sample.samples_hold_no_values` checks the allowlist rather than trusting the sentence.
+
+**Reading one. The shipped warehouse, forty two columns.**
+
+```
+arms                       found  masked    wrong   bands moved
+declaration only           20/20      12        2             0
+with sampling              20/20      12        2             0
+```
+
+Zero. Four of the forty two columns produce a sampled signal and all four agree with a
+column the name arm or the value arm already had. On the warehouse this repo publishes
+figures about, the arm that reads values changes no decision for anybody.
+
+```
+raw.encounter.attending_npi   unknown_identifier  0.5368  shape 9999999999,    98% distinct
+raw.patient.mrn               unknown_identifier  0.5500  shape AAA99999999,  100% distinct
+raw.patient.phone             unknown_identifier  0.5335  shape +99999999999, 100% distinct
+raw.patient.ssn               unknown_identifier  0.5412  shape 999-99-9999,  100% distinct
+```
+
+Getting to zero took a fix. The first reading moved three bands and every one of them moved
+down. `raw.patient.ssn` fell from 0.9943 to 0.7253, `raw.patient.phone` from 0.9525 to
+0.6984 and `raw.patient.mrn` from 0.9000 to 0.6525. All three left the accept band, so
+auto masking dropped from 12 columns to 9. An arm added to find columns the predicates miss
+had taken three columns the classifier already had right away from the masking policy.
+
+The cause is the conflict penalty. A second category scoring well is normally a dispute a
+reviewer settles, and `unknown_identifier` is a second category by construction on every
+column any other arm already named. The arm was agreeing and the penalty recorded it as a
+fight. `classify.two_readings_of_one_fact` now waives the penalty when one side is
+`unknown_identifier` and the other is a direct identifier, because `there is an identifier
+here` is the coarsest possible reading of `it is a national identifier`. It stays in force
+against a quasi identifier, where the two really are different findings.
+
+**Reading two. Four columns formatted outside the predicate set.**
+
+This is the measurement the sample warehouse cannot give. I wrote that corpus and those
+predicates in the same week, so every format in it is one I thought of.
+`probe.outside_rule` lives in `pii/sample_bench.py` and in no declared schema, which is why
+the pinned schema fingerprint did not move.
+
+```
+column             planted                declaration only   with sampling                  verdict
+travel_doc_ref     national_id            ignore 0.0000      review unknown_identifier 0.5500  recovered
+payer_ref          payment_card           ignore 0.0000      accept payment_card 0.8800         recovered
+site_patient_ref   medical_record_number  ignore 0.0000      ignore not_personal 0.0000         still missed
+request_ref        not_personal           ignore 0.0000      review unknown_identifier 0.5500   false alarm
+row_id             not_personal           ignore 0.0000      ignore not_personal 0.0000         unchanged
+```
+
+Two of the three personal columns come back. One does not. One column that is not personal
+gets flagged.
+
+`travel_doc_ref` holds a passport in `AA9999999` form and nothing in the repo describes that
+format. It comes back as an identifier of unknown kind at review confidence, which is the
+strongest honest answer. `unknown_identifier` sits under the accept threshold on purpose. A
+tool that cannot name what it found has no business deciding what happens to it.
+
+`payer_ref` is the one place the arm beats a predicate rather than a missing predicate. It
+holds a Luhn valid card number written with slashes, and the digit count predicate strips
+spaces and hyphens before counting, so the slash defeats it. A checksum is evidence about
+what a number is rather than about how long it is, so this one is named correctly and lands
+in accept at 0.8800.
+
+`site_patient_ref` is four site formats at a quarter each. No shape reaches the
+concentration threshold, so nothing fires, and the ten digit variant does not reach the
+telephone predicate's match floor either. Sampling misses it exactly as the predicates do.
+
+`request_ref` is a trace id. Fixed shape, unique per row, about nobody. The arm flags it,
+and the cost is not one wasted review. `unknown_identifier` is a direct identifier, so
+`table_is_person_linked` goes from false to true on this table and every other column in it
+is now read in the context of a table about people. One wrong column moved the verdict for
+the whole table.
+
+The fixture is mine and it grades the mechanism rather than the coverage. A shape rule that
+found four shapes I chose would say nothing. The claim is narrower. The rule holds no
+hypothesis about passports, slashed card formats or trace ids, and it still separates three
+of those five columns from nothing at all. It also brings two hypotheses it could not avoid.
+A Luhn check is a payment card hypothesis. The date template list exists because a timestamp
+cast to text is a fixed shape high cardinality code by every structural test the arm applies.
+
+## The threshold was never the thing
+
+The sampling arm has four constants in it and on the day it landed none of them had been
+swept. The one that looked like it mattered is `SHAPE_CONCENTRATION`, which says how much
+of a sample has to share one shape before the column counts as fixed format. It ships at
+0.90. `probe.outside_rule.site_patient_ref` is the column the arm misses and it holds four
+site formats at a quarter each. Lowering the threshold to 0.25 should find it.
+
+It does find it. It changes no decision.
+
+```
+the fixture, four columns formatted outside the predicate set
+concentration  signals  recovered  still missed  false alarms  person linked
+         0.20        4          2             1             1           True
+         0.25        4          2             1             1           True
+         0.30        3          2             1             1           True
+         0.50        3          2             1             1           True
+         0.70        3          2             1             1           True
+         0.90        3          2             1             1           True
+         1.00        3          2             1             1           True
+
+the shipped warehouse, forty two columns, through the ablation harness
+concentration  signals   found   masked  false alarms  bands moved
+         0.20        6      20       12             2            0
+         0.25        5      20       12             2            0
+         0.30        4      20       12             2            0
+         0.90        4      20       12             2            0
+         1.00        4      20       12             2            0
+```
+
+Eleven thresholds from 1.00 down to 0.20 and one verdict tally across all of them. Dropping
+to 0.25 produces one more signal on the fixture and one more on the warehouse. Dropping to
+0.20 produces a second one on the warehouse. Every one of them lands in the ignore band,
+which masks nothing and queues nobody.
+
+The reason is arithmetic rather than this fixture. An unnamed identifier's strength is
+`UNKNOWN_IDENTIFIER_STRENGTH` times the share of the sample holding the dominant shape.
+On `site_patient_ref` that is 0.55 times 0.25, which is 0.1375, against a review band that
+opens at 0.35. A column whose dominant shape holds less than
+`REVIEW_AT / UNKNOWN_IDENTIFIER_STRENGTH` of its sample cannot reach a reviewer whatever
+the threshold is set to. At the shipped numbers that floor is 0.6364. The bottom third of
+the threshold's range is decoration.
+
+`sample.concentration_floor` derives that rather than storing it, and two checks pin it.
+One pins the value against the two constants it comes from. The other builds a signal under
+the floor and asserts it lands in ignore. The threshold decides whether evidence exists.
+The strength and the band decide whether anybody hears it. A sweep of the first one alone
+was never going to move anything.
+
+The four thresholds are a `sample.Thresholds` object now rather than four module globals,
+because sweeping a global means rebinding it and a rebind cannot be asserted on. The
+default is the shipped configuration and a check holds the two together.
+
+## One query per column is the right shape, and the reason I gave for it was wrong
+
+`pii/profile.py` opened with a paragraph refusing to batch. One query per table would name
+every predicate for every column, it said, which is a product growing quadratically in the
+width of the table. That is not arithmetic, it is a guess. The predicate set is a fixed six,
+so a table of W columns needs 9W expressions. Linear.
+
+Measured, both shapes, against a generated table at four widths:
+
+```
+                        SQL length growth exponent against width
+per column                             1.005
+batched                                1.005
+```
+
+So the stated reason for the design was wrong. The design was still right, and for a reason
+nobody had written down. Both shapes are in the repo now and `profile.disagreements` holds
+them to the same answer field by field. They agreed at every width.
+
+Median of five passes, one process per shape so the peak memory belongs to one of them.
+Measured on two cores with 3915 MB of memory. DuckDB 1.5.6 running in process:
+
+```
+  cols  shape        stmts  sql chars  median s  spread   ms/col  peak MB
+    42  per column      42      33855     0.153    1.13    3.646       70
+    42  batched          1      32420     0.208    1.24    4.944      364
+    84  per column      84      67782     0.284    1.03    3.386       77
+    84  batched          1      64877     0.510    1.25    6.076     1061
+   168  per column     168     136275     0.582    1.03    3.467       82
+   168  batched          1     130430     1.447    1.22    8.610     1542
+   336  per column     336     273531     1.175    1.03    3.498      100
+   336  batched          1     261806     5.393    1.11   16.050     3612
+   672  per column     672     548043     2.637    1.10    3.924      132
+   672  batched            killed, exit 137, no output
+```
+
+The per column shape costs a flat 3.4 to 3.9 milliseconds a column from 42 wide to 672
+wide. Batching is slower at every width and the gap opens as the table gets wider, from
+1.36 times at 42 columns to 4.59 at 336. Memory is the sharper half. The batched statement
+goes from 5 times the per column peak to 36 times it, and at 672 columns it is 6048
+aggregate expressions in one statement and the OOM killer takes the process.
+
+It is not reading data that costs this. The same statement at ten rows instead of five
+thousand was killed too:
+
+```
+python3 scripts/scale_probe.py --widths 672 --rows 10 --only batched --passes 5
+  exit=137, header printed, no row
+
+python3 scripts/scale_probe.py --widths 672 --rows 10 --only per --passes 5
+  cols  rows  shape        stmts  sql chars  median s  spread  ms/col  peak MB
+   672    10  per column     672     548043     1.049    1.12   1.560       80
+```
+
+Ten rows is fifty bytes a column. So the cost tracks the number of aggregate expressions in
+the statement and not the rows under them. What this measurement does not do is say which
+part of the engine spends it. Binding, planning and the aggregate operator's own per
+expression state all grow with 6048 expressions and nothing here separates them. The honest
+version of the original paragraph is that one query per column is right because W small
+statements cost less than one statement W times the size, and the SQL being unreadable in a
+log was never the reason.
+
+One caveat that points the other way and is worth saying plainly. DuckDB is in process, so
+a round trip here is a function call rather than a network hop. Against a warehouse across
+a wire, 672 round trips cost something this machine cannot measure. The result above is the
+planner cost only. What it rules out is the idea that batching is a free win, and what it
+leaves open is the width and the latency where 672 round trips get expensive enough to pay
+3.6 GB for one statement.
+
+`pii/sample.py` is the second caller and it issues two statements a column rather than one.
+Only the count statement can be collapsed. Batching the value read would mean
+`SELECT c1, c2, ... FROM t LIMIT 500`, which holds 500 values of every column in the process
+at the same instant, and this is the module whose whole subject is holding as few as
+possible. So that one is refused on purpose. The count statement was batched and timed, and
+on this machine the two shapes cannot be separated:
+
+```
+THE SAMPLING ARM'S COUNT STATEMENT AT 168 COLUMNS
+per column      168 statements  median   0.181s  low   0.167s  high   0.195s
+batched           1 statements  median   0.105s  low   0.075s  high   0.185s
+median ratio 1.72x over 5 passes
+the two ranges overlap, so this machine cannot separate the two shapes
+```
+
+The median says 1.72 times faster and the ranges overlap, so there is no result here. The
+probe says so itself rather than leaving the ratio to be quoted on its own. That sentence is
+why the bench repeats every timing. The first version timed each shape once and this
+comparison came back at 0.94 times on one run and 1.29 on the next.
+
+## What a missing value does to a claim about a column
+
+The floor drops nulls before taking its majority and never says so, so a column that is
+sixty percent empty and forty percent valid email addresses scores exactly like a complete
+one. Here the match rate and the share of the column it was computed over are two fields.
+
+```
+ null rate  non null  match rate   support    weight   bands moved  accept band  emptiest
+      0.00      1000      1.0000    1.0000    0.9000             0           15    0.0000
+      0.02       983      1.0000    0.9830    0.8847             0           15    0.0332
+      0.10       897      1.0000    0.8970    0.8073             0           15    0.1150
+      0.30       713      1.0000    0.7130    0.6417             0           15    0.3205
+      0.60       403      1.0000    0.4030    0.3627             1           14    0.6343
+```
+
+The rate is over the values that exist, because a missing value has no shape to match.
+Counting a null as a failure instead would put a half empty column of perfectly formed
+email addresses under the match floor, and it would never be flagged at all.
+
+And then the honest end of it. Emptying sixty percent of every column in the warehouse
+moves one band in forty two. The arm the missing values damage is the arm that was already
+deciding almost nothing.
+
+## Seven categories with no column, and six with no rule either
+
+```
+8 of 25 categories have no column in this warehouse
+6 of those also have no rule in any arm, so nothing can return them
+2 have a rule and no column, which is the pair worth a fixture:
+    payment_card, unknown_identifier
+```
+
+The taxonomy names seven things the sample warehouse has no example of. Account numbers and
+biometrics and face photographs. Occupations and payment cards and vehicle identifiers and
+web addresses. Six of the seven have no rule in any arm, so no input could ever produce
+them. That is
+fair for a taxonomy, whose job is to name what a governance tool has to be able to express
+rather than what this one detects today, and it stops being fair the moment nobody says
+which is which. `classify.rule_coverage` reports it per category, derived from the rule
+tables rather than from a list maintained beside them.
+
+`payment_card` is the one that was different. It had a token rule and a value predicate. Both were reachable and both looked reasonable,
+and neither had ever run against anything. It has a fixture now. A rule that has never fired is the easiest kind of coverage to fake.
+
+`unknown_identifier` joined that list on 2026-10-10 and it is reachable only by the opt-in
+sampling arm. The coverage table carries a third column for that arm, so reachable at all
+and reachable by the arm set a given run used are two separate readings. Both of them have a
+fixture in `probe.outside_rule`.
