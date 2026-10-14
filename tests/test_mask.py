@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pii import mask
 from pii.classify import Band, Classification, Signal, Arm
-from pii.lineage import ColumnRef, Edge, EdgeKind, Graph
+from pii.lineage import ColumnRef, Edge, EdgeKind, Graph, Refusal, read_insert_select
 from pii.taxonomy import TAXONOMY, Granularity, Identifiability
 
 
@@ -372,6 +372,103 @@ def check_a_reviewers_decision_does_not_invent_a_confidence():
     assert settled.confidence == queued.confidence == 0.60
 
 
+def check_the_reviewer_path_and_the_classifier_path_read_one_rulebook():
+    """ot-082. The two callers of the category mapping must not be able to drift.
+
+    `resolve_review` used to get here by building a Classification carrying a Signal
+    nobody produced and feeding it back through `policy_for`. Removing that leaves two
+    entries into the same mapping, so this walks every category and asserts they agree.
+    """
+    from pii.taxonomy import TAXONOMY
+
+    for category in TAXONOMY:
+        decided = mask.settled_action(category.key, fired=True)
+        through_policy_for = mask.policy_for(
+            _result("t", "c", category.key, 0.99))
+        assert decided.action is through_policy_for.action, category.key
+        assert decided.target is through_policy_for.target, category.key
+
+
+def check_resolving_a_review_invents_no_evidence():
+    """The forged Signal, asserted gone rather than described in a comment.
+
+    The old version stamped `Signal(Arm.NAME, key, ACCEPT_AT, 'resolved by a reviewer')`
+    and credited the name arm with a match it never made. A Policy carries no signals, so
+    the check is that the classification the module would have had to build is never built
+    and that the reviewer's reason is the only provenance on the result.
+    """
+    settled = mask.resolve_review(_queued(), True)
+    assert "reviewer" in settled.reason
+    assert settled.confidence == 0.60
+    # The accept threshold must not have leaked onto the result as a number.
+    from pii.classify import ACCEPT_AT
+
+    assert settled.confidence != ACCEPT_AT
+
+
+def check_no_non_personal_category_can_ever_reach_the_review_band():
+    """Why `resolve_review` does not carry the evidence_only flag.
+
+    Found on 2026-10-14 while splitting the mapping out. The flag can only come back for
+    a category of no identifiability, and `not_personal` is the only one in the taxonomy,
+    and `Classification.band` pins that key to ignore regardless of confidence. So the
+    reviewer path can never see it and a line forwarding it would be unreachable. This
+    asserts the premise, so adding a second non personal category fails here rather than
+    silently reaching code nobody checked.
+    """
+    from pii.classify import Band
+    from pii.taxonomy import TAXONOMY, Identifiability
+
+    non_personal = [c.key for c in TAXONOMY
+                    if c.identifiability is Identifiability.NONE]
+    assert non_personal == ["not_personal"]
+    for confidence in (0.0, 0.36, 0.60, 0.74, 0.99):
+        assert _result("t", "c", "not_personal", confidence).band is Band.IGNORE
+
+
+def check_a_retain_reached_with_nothing_firing_still_says_so():
+    # The counterpart. policy_for passes fired False through to the same mapping, and the
+    # evidence_only flag is what keeps the two retains apart in a report.
+    nothing = mask.policy_for(_result("t", "c", "not_personal", 0.99, signals=()))
+    assert nothing.action is mask.Action.RETAIN
+    assert nothing.evidence_only is True
+    assert "absence of" in nothing.reason
+
+
+def check_the_category_mapping_returns_a_value_nobody_can_edit():
+    # Every other record in this module is frozen and this one was not until a mutation
+    # pass flipped the flag and nothing failed. A Decision handed to two callers that one
+    # of them can rewrite in place is a shared mutable rulebook answer.
+    decided = mask.settled_action("email", fired=True)
+    assert _raises(lambda: setattr(decided, "action", mask.Action.RETAIN), Exception)
+
+
+def check_a_personal_categorys_reason_does_not_quote_a_signal_count():
+    """The guard on where the count gets appended.
+
+    Turning the `and` in `policy_for` into an `or` survived the suite on 2026-10-14. Under
+    that mutant every classified column with a signal gets ` on N signals` glued onto its
+    reason, including a redaction, and the reason is text the compliance report publishes.
+    Nothing was reading the reason of anything except the two retains.
+    """
+    for key, action in (("email", mask.Action.REDACT),
+                        ("postal_code", mask.Action.GENERALISE),
+                        ("health_condition", mask.Action.RETAIN),
+                        ("sex", mask.Action.RETAIN)):
+        p = mask.policy_for(_result("t", "c", key, 0.99))
+        assert p.action is action, key
+        assert "signals" not in p.reason, (key, p.reason)
+        assert p.reason == mask.settled_action(key, fired=True).reason, key
+
+
+def check_a_non_personal_retain_quotes_how_much_evidence_there_was():
+    # The signal count is a property of the result rather than of the category, so it is
+    # appended by policy_for and is absent from the category mapping's own reason.
+    fired = mask.policy_for(_result("t", "c", "not_personal", 0.99))
+    assert "on 1 signals" in fired.reason
+    assert "signals" not in mask.settled_action("not_personal", fired=True).reason
+
+
 # measure_residual against a stub connection, so the arithmetic is reachable without a
 # database. The database checks live in tests/test_mask_applied.py and they are slower and
 # fewer, which is the wrong place for a rule that decides which columns enter the set.
@@ -487,3 +584,54 @@ def check_the_refusal_names_both_candidates():
 def check_a_star_aggregate_into_another_table_is_not_this_tables_weight():
     g = _g(_e("raw.a.*", "other.rows", EdgeKind.AGGREGATE))
     assert mask.weight_candidates(g, "m") == ()
+
+
+def check_a_table_nothing_derives_is_told_apart_from_one_that_was_not_read():
+    # The ot-086 distinction. Both tables have no weight edge and the reasons are not the
+    # same kind of thing. raw.patient has no statement in the graph and rows are people.
+    # analytics.m has one the reader walked away from partway through.
+    read_but_empty = _g(_e("raw.a.id", "m.id", EdgeKind.COPY))
+    assert mask.derivation_of(read_but_empty, "m") is mask.Derivation.READ
+    assert mask.derivation_of(read_but_empty, "raw.patient") is mask.Derivation.NOT_DERIVED
+    assert mask.weight_for(read_but_empty, "m") is None
+
+    unread = Graph(edges=read_but_empty.edges,
+                   refusals=(Refusal("scalar subquery", "select item 2", "m"),))
+    assert mask.derivation_of(unread, "m") is mask.Derivation.UNREADABLE
+    assert mask.derivation_of(unread, "raw.patient") is mask.Derivation.NOT_DERIVED
+    assert _raises(lambda: mask.weight_for(unread, "m"), ValueError)
+    # The raw table beside it still answers, which is the half that keeps this usable.
+    assert mask.weight_for(unread, "raw.patient") is None
+
+
+def check_a_found_group_size_beats_a_refusal_on_the_same_table():
+    # A star edge is positive evidence. The refusal says part of the statement was unread
+    # and it does not unsay the part that was.
+    g = Graph(edges=MART.edges,
+              refusals=(Refusal("star expansion", "select item 1",
+                                "analytics.encounter_daily"),))
+    assert mask.derivation_of(g, "analytics.encounter_daily") is mask.Derivation.UNREADABLE
+    assert mask.weight_for(g, "analytics.encounter_daily") == "encounters"
+
+
+def check_a_refusal_with_no_target_table_poisons_every_table_in_the_graph():
+    # A statement rejected on an unsupported keyword never reaches its INSERT INTO, so the
+    # reader knows one table is unread and not which. Calling the others underived on that
+    # evidence is the guess the whole thread is about.
+    blind = read_insert_select("MERGE INTO analytics.encounter_daily USING x ON 1 = 1")
+    assert len(blind.unattributed_refusals()) == 1
+    poisoned = MART.merge(blind)
+    for table in ("raw.patient", "raw.encounter"):
+        assert mask.derivation_of(poisoned, table) is mask.Derivation.UNREADABLE
+        assert _raises(lambda t=table: mask.weight_for(poisoned, t), ValueError)
+
+
+def check_the_unreadable_refusal_says_what_was_not_read():
+    g = Graph(edges=(), refusals=(Refusal("shorthand cast", "select item 4", "m"),))
+    try:
+        mask.weight_for(g, "m")
+    except ValueError as exc:
+        assert "shorthand cast" in str(exc)
+        assert "safer than it is" in str(exc)
+    else:
+        raise AssertionError("an unread derivation was not refused")

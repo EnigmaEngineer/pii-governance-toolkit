@@ -33,9 +33,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional, Sequence, Tuple
 
-from pii.classify import ACCEPT_AT, Arm, Band, Classification, Signal
+from pii.classify import Band, Classification
 from pii.crawl import _quote
-from pii.lineage import EdgeKind
+from pii.lineage import ROW_COUNT_SOURCE, EdgeKind
 from pii.taxonomy import (
     TAXONOMY,
     Granularity,
@@ -162,37 +162,47 @@ class Policy:
         return self.action in (Action.REDACT, Action.GENERALISE)
 
 
-def policy_for(result: Classification) -> Policy:
-    """The action for one column, from its classification alone.
+@dataclass(frozen=True)
+class Decision:
+    """What the rulebook says about a settled category, before any column is named.
 
-    Deliberately blind to the other columns in the table. Whether the set this column sits
-    in is safe afterwards is `residual_risk`'s question and answering it here would mean
-    answering it wrongly, because this function cannot see the set.
+    Split out of `policy_for` so the reviewer path can reach the same mapping without
+    holding a `Classification`. It used to build one, complete with a `Signal` nobody
+    produced, purely to get back in through the front door. `ot-082` carried that from
+    2026-09-21.
     """
-    category = TAXONOMY.get(result.category_key)
 
-    if result.band is Band.REVIEW:
-        return Policy(
-            result.table, result.column, result.category_key, Action.REVIEW,
-            result.confidence,
-            "scored {:.4f}, under the accept threshold, so a person decides".format(
-                result.confidence),
-        )
+    action: Action
+    reason: str
+    target: Optional[Granularity] = None
+    evidence_only: bool = False
+
+
+def settled_action(category_key: str, fired: bool) -> Decision:
+    """The action for a category that is no longer in the review band.
+
+    `fired` says whether any arm produced evidence on the column. It only changes the
+    reading of a RETAIN in a non personal category, where nothing firing is an absence of
+    evidence rather than a finding.
+
+    It has no default and that is deliberate. It carried True until a mutation pass on
+    2026-10-14 flipped the default and nothing failed, because the only category the flag
+    can reach cannot reach a review. A default no caller depends on is a site no check can
+    kill, so both callers say what they mean instead.
+    """
+    category = TAXONOMY.get(category_key)
 
     if category.identifiability is Identifiability.NONE:
         # Two ways to land here and they carry different weight. A column the classifier
         # scored on real evidence and placed outside the personal categories is a finding. A
         # column nothing fired on at all is an absence of evidence, and the value arm cannot
         # test a pattern nobody wrote down, so the absence is worth less than it looks.
-        fired = bool(result.signals)
-        return Policy(
-            result.table, result.column, result.category_key, Action.RETAIN,
-            result.confidence,
+        return Decision(
+            Action.RETAIN,
             ("no rule fired on this column, so it is retained on an absence of "
              "evidence rather than on a finding")
             if not fired else
-            "classified outside the personal categories on {} signals".format(
-                len(result.signals)),
+            "classified outside the personal categories",
             evidence_only=not fired,
         )
 
@@ -201,17 +211,15 @@ def policy_for(result: Classification) -> Policy:
         # been identified by the quasi columns, and it destroys the column the warehouse
         # exists to analyse. The protection for a sensitive attribute is the k of the quasi
         # set beside it, which is measured below rather than asserted here.
-        return Policy(
-            result.table, result.column, result.category_key, Action.RETAIN,
-            result.confidence,
+        return Decision(
+            Action.RETAIN,
             "a sensitive attribute is not an identifier, and what protects it is the "
             "k of the quasi columns beside it",
         )
 
     if category.identifiability is Identifiability.DIRECT:
-        return Policy(
-            result.table, result.column, result.category_key, Action.REDACT,
-            result.confidence,
+        return Decision(
+            Action.REDACT,
             "a direct identifier names a person by itself and has no coarser form that "
             "stops doing so",
         )
@@ -220,21 +228,48 @@ def policy_for(result: Classification) -> Policy:
     # the case where a coarser form exists. Where it does not, there is nothing between
     # keeping the value and destroying it.
     if category.identifies_at is None:
-        return Policy(
-            result.table, result.column, result.category_key, Action.RETAIN,
-            result.confidence,
+        return Decision(
+            Action.RETAIN,
             "a quasi identifier with no coarser form. It is retained and it counts "
             "toward the k of its set",
         )
 
     family = granularity_family(category.identifies_at)
     target = SAFE_HARBOR_TARGET[family]
-    return Policy(
-        result.table, result.column, result.category_key, Action.GENERALISE,
-        result.confidence,
+    return Decision(
+        Action.GENERALISE,
         "identifies at {} or finer, and {} is the coarsest form the clause list "
         "permits".format(category.identifies_at.value, target.value),
         target=target,
+    )
+
+
+def policy_for(result: Classification) -> Policy:
+    """The action for one column, from its classification alone.
+
+    Deliberately blind to the other columns in the table. Whether the set this column sits
+    in is safe afterwards is `residual_risk`'s question and answering it here would mean
+    answering it wrongly, because this function cannot see the set.
+    """
+    if result.band is Band.REVIEW:
+        return Policy(
+            result.table, result.column, result.category_key, Action.REVIEW,
+            result.confidence,
+            "scored {:.4f}, under the accept threshold, so a person decides".format(
+                result.confidence),
+        )
+
+    decided = settled_action(result.category_key, fired=bool(result.signals))
+    reason = decided.reason
+    if (result.signals
+            and TAXONOMY.get(result.category_key).identifiability is Identifiability.NONE):
+        # The non personal retain is the only reason that quotes how much evidence there
+        # was, and the count is a property of this result rather than of the category.
+        reason = "{} on {} signals".format(reason, len(result.signals))
+    return Policy(
+        result.table, result.column, result.category_key, decided.action,
+        result.confidence, reason, target=decided.target,
+        evidence_only=decided.evidence_only,
     )
 
 
@@ -262,15 +297,20 @@ def resolve_review(policy: Policy, personal: bool) -> Policy:
         return Policy(policy.table, policy.column, "not_personal", Action.RETAIN,
                       policy.confidence, "a reviewer decided this does not need masking")
 
-    # Stamped at the accept threshold so `policy_for` reads it as settled rather than
-    # sending it straight back to the queue it just came out of. The confidence carried on
-    # the returned policy is the classifier's original, because that is the number that was
+    # Asks the rulebook directly rather than rebuilding a Classification to ask through
+    # policy_for. The old version stamped a synthetic Signal carrying the accept threshold
+    # and credited it to the name arm, which no arm had run. The confidence carried on the
+    # returned policy is the classifier's original, because that is the number that was
     # true about the evidence and a reviewer's decision is not a score.
-    settled = Classification(policy.table, policy.column, policy.category_key,
-                             ACCEPT_AT, (Signal(Arm.NAME, policy.category_key,
-                                                ACCEPT_AT, "resolved by a reviewer"),))
-    decided = policy_for(settled)
-    return Policy(decided.table, decided.column, decided.category_key, decided.action,
+    # fired is True because a person looked at the column, which is evidence even though
+    # no arm ran.
+    decided = settled_action(policy.category_key, fired=True)
+    # No evidence_only here and that is not an oversight. The flag only comes back for a
+    # category of no identifiability, `not_personal` is the only one, and that key is
+    # pinned to the ignore band so it never reaches a review. Passing the flag through
+    # would be a line that cannot fire. A check asserts the premise instead, so a second
+    # non personal category added later fails rather than quietly lands here.
+    return Policy(policy.table, policy.column, policy.category_key, decided.action,
                   policy.confidence,
                   "a reviewer confirmed the category, then " + decided.reason,
                   target=decided.target)
@@ -417,17 +457,52 @@ def weight_candidates(graph, table: str) -> Tuple[str, ...]:
     warehouse was measured by row count and reported safer than it is by exactly the factor
     its GROUP BY deduplicated by. That is the precise failure this module exists to catch
     and supplying the answer by hand is how a tool avoids catching it.
+
+    It is worth being plain about what this reads. `lineage.ROW_COUNT_SOURCE` is a
+    convention of this repo's own reader and not a property of SQL. A graph arriving from a
+    dbt manifest or an information_schema view records nothing of the sort, so an empty
+    result here means either no group size column or a graph this function cannot speak
+    about. `derivation_of` is how the second case stops looking like the first.
     """
     found = set()
     for edge in graph.edges:
         if edge.kind is not EdgeKind.AGGREGATE:
             continue
-        if edge.source.column != "*":
+        if edge.source.column != ROW_COUNT_SOURCE:
             continue
         if edge.target.table != table:
             continue
         found.add(edge.target.column)
     return tuple(sorted(found))
+
+
+class Derivation(Enum):
+    """What the lineage graph is entitled to say about where a table's rows came from."""
+
+    READ = "read"
+    NOT_DERIVED = "not_derived"
+    UNREADABLE = "unreadable"
+
+
+def derivation_of(graph, table: str) -> Derivation:
+    """Whether a missing weight edge on this table is a fact or an unread statement.
+
+    READ means the reader parsed a statement that writes this table and recorded no
+    refusal against it, so an absent group size column is a finding. NOT_DERIVED means
+    nothing in the graph builds this table and nothing was given up on, which is the four
+    raw tables of this warehouse and the case where rows are people. UNREADABLE means the
+    reader refused something, so the absence of an edge says nothing at all.
+
+    An unattributed refusal makes every table UNREADABLE and that is deliberate. A
+    statement rejected on an unsupported keyword never reached its INSERT INTO, so the
+    reader knows one table's derivation is unread and cannot say which. Calling the rest
+    NOT_DERIVED on that evidence is the guess this function exists to refuse.
+    """
+    if graph.refusals_for(table) or graph.unattributed_refusals():
+        return Derivation.UNREADABLE
+    if any(e.target.table == table for e in graph.derivation_edges()):
+        return Derivation.READ
+    return Derivation.NOT_DERIVED
 
 
 def weight_for(graph, table: str) -> Optional[str]:
@@ -436,16 +511,31 @@ def weight_for(graph, table: str) -> Optional[str]:
     None means the table is not pre-aggregated and rows are people, which is the ordinary
     case and the right default. Two candidates is not a default, it is a question, and
     guessing between them silently is worse than the typed in constant this replaced.
+
+    The third case is the one `ot-086` opened. A table the reader could not fully read has
+    no group size edge for the same reason it has no edges at all, and returning None there
+    reported a mart as safer than it is by the factor its GROUP BY deduplicated by. That
+    now raises. The cost is that a warehouse holding one statement this reader cannot parse
+    gets no k for any of its tables, which is a loud wrong answer instead of a quiet one.
     """
     candidates = weight_candidates(graph, table)
-    if not candidates:
-        return None
     if len(candidates) > 1:
         raise ValueError(
             "{} has {} columns that could be its group size, {}. Pass the one you mean "
             "rather than letting this pick".format(
                 table, len(candidates), ", ".join(candidates)))
-    return candidates[0]
+    if candidates:
+        return candidates[0]
+
+    state = derivation_of(graph, table)
+    if state is Derivation.UNREADABLE:
+        blocking = graph.refusals_for(table) or graph.unattributed_refusals()
+        raise ValueError(
+            "cannot say whether {} is pre-aggregated, because the lineage reader did not "
+            "finish reading what builds it. The first thing it refused was {}. Counting "
+            "rows here would report the table safer than it is if it has already "
+            "grouped".format(table, blocking[0].what))
+    return None
 
 
 def measure_residual(con,
