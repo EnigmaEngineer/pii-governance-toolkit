@@ -130,6 +130,15 @@ swapping two inside a table moves it. A check written on the opposite assumption
 that is how this was found. Column order is reported by the comparison as its own kind of
 difference, because a reordered table and a changed one are not the same event.
 
+**The crawler gets the same hash by passing its tables in.** `schema.fingerprint` takes an
+optional table list and defaults to the declared schema, so `crawl.Crawl.fingerprint` calls
+it with what was crawled. It used to rebind `schema.TABLES` for the duration of the call
+and restore it in a `finally`, which worked and was not thread safe and mutated another
+module from outside. `ot-073` carried that from 2026-09-18 and this repo already argues
+against the shape elsewhere, in the note about sweeping a module global. Taking the
+argument also let the control check for the hash stop reimplementing it, which it had been
+doing over a row the `Column` type refuses.
+
 ## Nullability is a claim about the data now
 
 The corpus writes nulls. It did not at first. While it did not, every nullable flag was a declaration nothing had
@@ -687,7 +696,8 @@ The group size column comes off the lineage graph. `mask.weight_for` finds it by
 for an `AGGREGATE` edge whose source is a literal `*`, and it refuses rather than guesses
 when a table offers two candidates. Measuring the mart by row count instead reports a
 share of 1.0000 against the real 0.9598, which is the failure that discriminator exists to
-stop.
+stop. It also refuses when the lineage reader did not finish reading what builds the
+table, which is `ot-086` and is covered in the limitations.
 
 ### k was the statistic the thread asked for and it cannot do the job
 
@@ -1607,8 +1617,8 @@ fixture in `probe.outside_rule`.
 ## Running the checks
 
 ```
-python3 tests/run_all.py            649 checks, standard library only
-python3 tests/run_with_duckdb.py    765 checks, needs the driver
+python3 tests/run_all.py            665 checks, standard library only
+python3 tests/run_with_duckdb.py    784 checks, needs the driver
 ```
 
 The second one fails rather than skips when DuckDB is missing, and exits 2. A runner that
@@ -1857,17 +1867,57 @@ exists.
 
 **The group size column is discovered now, and the discriminator is narrow.**
 `mask.weight_for` reads it off the lineage graph. A `count(*)` names no field, so the
-reader writes it as an `AGGREGATE` edge whose source column is a literal `*`, and that star
-is the entire test. It picks `encounters` on the mart and nothing on the four raw tables.
-`mean_length_of_stay_h` is also an `AGGREGATE` target and its sources are named columns, so
-it is an average over rows rather than a count of them, and without the star test it would
-be a second candidate. Two candidates refuse rather than guess.
+reader writes it as an `AGGREGATE` edge whose source column is `lineage.ROW_COUNT_SOURCE`.
+That constant is a literal `*` and the star is the entire test. It picks `encounters` on
+the mart and nothing on the four raw tables. `mean_length_of_stay_h` is also an `AGGREGATE` target and
+its sources are named columns, so it is an average over rows rather than a count of them,
+and without the star test it would be a second candidate. Two candidates refuse rather
+than guess.
 
-What this does not cover is a mart whose group size was written by hand rather than derived
-by a statement this reader parsed. There the graph has no edge and the table is counted by
-rows, which is the original defect with a narrower blast radius. It used to be a dict typed
-into two files, which meant the mart was measured correctly on the one warehouse whose
-answer I already knew.
+That star is a convention of this reader and not a property of SQL. A graph arriving from a
+dbt manifest or an `information_schema` view would record nothing of the sort. The constant
+is where that coupling is visible, which is the most the code can do about it without a
+second reader to test against.
+
+**A missing weight edge used to mean two different things and now it means one.**
+`ot-086` opened on the day the typed in dict was deleted, because deleting it narrowed the
+blast radius rather than removing the defect. `weight_for` returned `None` both for a table
+nothing derives, where rows really are people, and for a table whose derivation statement
+the reader walked away from partway through. The second case reported a pre-aggregated
+table as safer than it is by exactly the factor its `GROUP BY` deduplicated by, silently.
+
+The fix is a refusal rather than a guess, and it needed the reader to say which table it
+failed on. `lineage.Refusal` now carries the insert target it was raised under, empty when
+the reader gave up before parsing one. `mask.derivation_of` reads that into three states.
+
+```
+analytics.encounter_daily      read           encounters
+raw.claim                      not_derived    rows are people
+raw.device_reading             not_derived    rows are people
+raw.encounter                  not_derived    rows are people
+raw.patient                    not_derived    rows are people
+```
+
+On this warehouse nothing changes, because the one derived statement parses with zero
+refusals. The cost shows up the moment a warehouse holds a statement this reader cannot
+read. Merge in a single `MERGE`, which is rejected on the keyword before the reader learns
+what it writes to, and four of the five tables stop answering.
+
+```
+with one unreadable statement   refusals 1   unattributed 1
+                                tables refused 4   tables answered 1
+```
+
+The mart keeps its answer, because a found count edge is evidence and a refusal elsewhere
+does not unsay it. An unattributed refusal makes every other table unreadable, which looks
+harsh and is the only honest reading. The reader knows one table's derivation is unread and
+cannot say which, so calling the rest underived would be the same guess in a new place. The
+figures are in `measurements/weight-refusal.json` and two checks re-derive them from a
+database.
+
+This trades a quiet wrong answer for a loud missing one. On a real warehouse with one
+unparsed statement that means no k for anything, which is worse to use and better to
+publish.
 
 **The compliance report has no addressee, no date and no signature.** It is a document
 generated from a scan. Whether the thing a regulator accepts also needs a named

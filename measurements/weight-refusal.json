@@ -1,0 +1,48 @@
+{
+  "edges": 10,
+  "refusals": 0,
+  "tables": [
+    {
+      "derivation": "read",
+      "refused": false,
+      "refused_with_one_unreadable_statement": false,
+      "table": "analytics.encounter_daily",
+      "weight": "encounters"
+    },
+    {
+      "derivation": "not_derived",
+      "refused": false,
+      "refused_with_one_unreadable_statement": true,
+      "table": "raw.claim",
+      "weight": null
+    },
+    {
+      "derivation": "not_derived",
+      "refused": false,
+      "refused_with_one_unreadable_statement": true,
+      "table": "raw.device_reading",
+      "weight": null
+    },
+    {
+      "derivation": "not_derived",
+      "refused": false,
+      "refused_with_one_unreadable_statement": true,
+      "table": "raw.encounter",
+      "weight": null
+    },
+    {
+      "derivation": "not_derived",
+      "refused": false,
+      "refused_with_one_unreadable_statement": true,
+      "table": "raw.patient",
+      "weight": null
+    }
+  ],
+  "unattributed_refusals": 0,
+  "with_one_unreadable_statement": {
+    "refusals": 1,
+    "tables_answered": 1,
+    "tables_refused": 4,
+    "unattributed_refusals": 1
+  }
+}

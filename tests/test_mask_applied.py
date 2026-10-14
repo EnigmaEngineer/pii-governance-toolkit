@@ -197,3 +197,71 @@ def check_the_shipped_warehouse_has_a_table_nobody_can_measure_yet():
         assert blocked == 4, blocked
     finally:
         con.close()
+
+
+# The derivation manifest. Re-derived from a database rather than trusted, same rule as
+# every other measurement in this repo.
+
+MANIFEST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "measurements", "weight-refusal.json")
+
+REGENERATE_DERIVATION = ("python3 scripts/plant.py --db /tmp/pii.duckdb && "
+                         "python3 scripts/mask_probe.py --db /tmp/pii.duckdb "
+                         "--manifest measurements/weight-refusal.json")
+
+
+def check_the_derivation_manifest_re_derives_from_a_database():
+    """Every row of the committed manifest, recomputed here.
+
+    The manifest is what the README is allowed to quote about ot-086. A figure in it that
+    cannot be recovered on another machine is the defect day 5 shipped and the second fire
+    found, so this is the gate that stops it happening to this one.
+    """
+    import json
+
+    from pii import lineage, schema
+    from scripts.mask_probe import manifest as build_manifest
+
+    with open(MANIFEST, encoding="utf-8") as fh:
+        published = json.load(fh)
+
+    con = _db()
+    try:
+        graph = lineage.warehouse_graph(con)
+    finally:
+        con.close()
+    fresh = build_manifest(graph, sorted({t.fqn for t in schema.TABLES}))
+    assert fresh == published, (
+        "the derivation manifest did not re-derive. regenerate with: {}".format(
+            REGENERATE_DERIVATION))
+
+
+def check_the_derivation_manifest_carries_no_wall_time():
+    # Same door closer as the round two manifest. A derivation state is a count and a
+    # verdict and nothing in it is allowed to be a duration.
+    with open(MANIFEST, encoding="utf-8") as fh:
+        text = fh.read()
+    for word in ("_ms", "seconds", "millis"):
+        assert word not in text, (
+            "{} is a wall time and the manifest is counts only".format(word))
+
+
+def check_losing_one_statement_costs_the_whole_warehouse_its_weight_verdict():
+    """The number the manifest exists to publish, asserted rather than printed.
+
+    Four of five tables stop answering, and the mart keeps its answer because a found
+    count edge is evidence that a refusal elsewhere does not unsay. The asymmetry is the
+    point. This design trades a quiet wrong answer for a loud missing one.
+    """
+    import json
+
+    with open(MANIFEST, encoding="utf-8") as fh:
+        published = json.load(fh)
+    poisoned = published["with_one_unreadable_statement"]
+    assert poisoned["tables_refused"] == 4
+    assert poisoned["tables_answered"] == 1
+    assert published["refusals"] == 0
+    answered = [r["table"] for r in published["tables"]
+                if not r["refused_with_one_unreadable_statement"]]
+    assert answered == ["analytics.encounter_daily"]

@@ -18,6 +18,7 @@ of a GROUP BY, same rule as `pii/profile.py`.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -189,9 +190,85 @@ def section_unmasked_comparison(con):
     print("different properties and this is the gap between them.")
 
 
+def _unreadable_variant(graph):
+    """The same graph plus one statement this reader will not parse.
+
+    A MERGE is rejected on the keyword, before the reader gets as far as the target table,
+    so the refusal it carries names no table. That is the case that makes every table in
+    the graph unreadable, and it is the one worth measuring because it is the cheapest
+    thing a real warehouse can contain.
+    """
+    return graph.merge(lineage.read_insert_select(
+        "MERGE INTO analytics.encounter_daily USING raw.encounter ON 1 = 1"))
+
+
+def _weight_verdict(graph, table):
+    try:
+        return mask.weight_for(graph, table), False
+    except ValueError:
+        return None, True
+
+
+def section_derivation(graph, tables):
+    rule("WHAT THE GRAPH IS ENTITLED TO SAY ABOUT EACH TABLE")
+    print("None used to mean two different things. A table nothing derives, where rows are")
+    print("people, and a table whose statement this reader could not finish. The second one")
+    print("now refuses instead of answering.")
+    print()
+    for table in tables:
+        weight, refused = _weight_verdict(graph, table)
+        print("  {:<30} {:<13} {}".format(
+            table, mask.derivation_of(graph, table).value,
+            "REFUSED" if refused else (weight or "rows are people")))
+
+    poisoned = _unreadable_variant(graph)
+    refused_now = sum(1 for t in tables if _weight_verdict(poisoned, t)[1])
+    print()
+    print("add one MERGE this reader rejects on the keyword and {} of {} tables stop".format(
+        refused_now, len(tables)))
+    print("answering. The mart keeps its answer because a found count edge is evidence and")
+    print("a refusal elsewhere does not unsay it.")
+
+
+def manifest(graph, tables) -> dict:
+    """The machine independent figures from the section above.
+
+    Counts and verdicts only. No wall time goes in here, because a committed figure has to
+    re-derive on another machine and a millisecond does not.
+    """
+    poisoned = _unreadable_variant(graph)
+    rows = []
+    for table in tables:
+        weight, refused = _weight_verdict(graph, table)
+        _, refused_poisoned = _weight_verdict(poisoned, table)
+        rows.append({
+            "table": table,
+            "derivation": mask.derivation_of(graph, table).value,
+            "weight": weight,
+            "refused": refused,
+            "refused_with_one_unreadable_statement": refused_poisoned,
+        })
+    return {
+        "edges": len(graph.edges),
+        "refusals": len(graph.refusals),
+        "unattributed_refusals": len(graph.unattributed_refusals()),
+        "tables": rows,
+        "with_one_unreadable_statement": {
+            "refusals": len(poisoned.refusals),
+            "unattributed_refusals": len(poisoned.unattributed_refusals()),
+            "tables_refused": sum(1 for r in rows
+                                  if r["refused_with_one_unreadable_statement"]),
+            "tables_answered": sum(1 for r in rows
+                                   if not r["refused_with_one_unreadable_statement"]),
+        },
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description="Generate, apply and grade the masking policy.")
     ap.add_argument("--db", default="/tmp/pii.duckdb")
+    ap.add_argument("--manifest", default=None,
+                    help="write the machine independent figures here as JSON")
     args = ap.parse_args()
 
     import duckdb
@@ -201,13 +278,11 @@ def main():
         crawled = crawl.crawl(con)
         profiles = profile.profile_crawl(con, crawled)
         # The policy is the shipped artefact, so it is generated from the shipped
-        # classifier configuration, which reads the lineage graph.
-        cols = [c.name for c in
-                schema.tables_by_fqn()["analytics.encounter_daily"].columns]
-        graph = lineage.read_insert_select(
-            schema.DERIVED_SQL["analytics.encounter_daily"], cols).merge(
-                lineage.Graph(edges=lineage.foreign_key_edges(
-                    con, crawl.ENGINE_SCHEMAS)))
+        # classifier configuration, which reads the lineage graph. ot-126 moved these six
+        # lines into lineage.warehouse_graph on 2026-10-09 and this caller kept its own
+        # copy, which is the fourth one that function exists to delete. Verified identical
+        # on both edges and refusals before swapping.
+        graph = lineage.warehouse_graph(con)
         results = grain.classify_shipped(con, profiles, graph)
         policies = mask.generate(results)
 
@@ -221,8 +296,16 @@ def main():
         section_policy(policies)
         section_absence(policies)
         section_residual(con, policies, graph)
+        section_derivation(graph, sorted({t.fqn for t in schema.TABLES}))
         section_the_set_is_the_problem(con, policies)
         section_unmasked_comparison(con)
+
+        if args.manifest:
+            with open(args.manifest, "w", encoding="utf-8") as fh:
+                json.dump(manifest(graph, sorted({t.fqn for t in schema.TABLES})),
+                          fh, indent=2, sort_keys=True)
+                fh.write("\n")
+            print("\nwrote {}".format(args.manifest))
         return 0
     finally:
         con.close()
