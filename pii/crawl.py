@@ -110,19 +110,12 @@ class Crawl:
         Deliberately computed by the declared module's own function rather than by a copy
         of its body living here. A second implementation of a hash is a second answer, and
         the two would agree right up until one of them was edited.
+
+        It used to get there by rebinding `schema.TABLES` for the duration of the call.
+        The hash now takes its tables as an argument, so nothing is rebound and no other
+        module's state moves to compute one number.
         """
-        return _fingerprint_over(self.tables)
-
-
-def _fingerprint_over(tables: Sequence[Table]) -> str:
-    import pii.schema as declared
-
-    original = declared.TABLES
-    try:
-        declared.TABLES = tuple(tables)
-        return declared.fingerprint()
-    finally:
-        declared.TABLES = original
+        return fingerprint(self.tables)
 
 
 def _rows(con, sql: str, params: Sequence = ()) -> List[tuple]:
@@ -233,9 +226,9 @@ def compare_references(crawled: Crawl) -> Tuple[Difference, ...]:
     fingerprint story, and a reference is not one of the five fields in the hash. Folding
     these in would make a green `compare` mean two different things.
     """
-    # Read off the module rather than off a name bound at import time, the same way
-    # `_fingerprint_over` reaches for `declared.TABLES`, so a test that swaps the declared
-    # schema swaps its references with it.
+    # Read off the module rather than off a name bound at import time, so a test that
+    # swaps the declared schema swaps its references with it. The fingerprint used to
+    # reach for `declared.TABLES` the same way and no longer does.
     import pii.schema as declared
 
     declared_refs = {

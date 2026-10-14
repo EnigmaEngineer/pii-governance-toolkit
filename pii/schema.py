@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from pii.taxonomy import TAXONOMY, Category, Granularity, Identifiability
 
@@ -310,8 +310,8 @@ PLANTED: Tuple[PlantedColumn, ...] = (
 )
 
 
-def fingerprint() -> str:
-    """Content hash over the sample schema, including the parts nothing reads yet.
+def fingerprint(tables: Optional[Sequence[Table]] = None) -> str:
+    """Content hash over a set of tables, defaulting to the sample schema declared here.
 
     The nullability and key flags are declared here and consumed by almost nothing
     yet, so a mutation pass flipped ten of them and the whole suite stayed green. Writing
@@ -320,9 +320,14 @@ def fingerprint() -> str:
     The schema is a published artefact instead, so it gets pinned the way an artefact
     gets pinned. One golden value, checked against a literal in the suite. The crawler
     that arrives next has to recover exactly this, which gives the hash a second job.
+
+    `tables` exists so a caller holding its own tables can get the same hash over them
+    without this module's state moving. The crawler used to reach in and rebind `TABLES`
+    around a call, restoring it in a finally. That worked and it was not thread safe, and
+    it mutated another module from outside. `ot-073` carried it from 2026-09-18.
     """
     rows = []
-    for t in sorted(TABLES, key=lambda x: x.fqn):
+    for t in sorted(TABLES if tables is None else tables, key=lambda x: x.fqn):
         for c in t.columns:
             rows.append({
                 "table": t.fqn,

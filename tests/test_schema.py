@@ -217,20 +217,28 @@ def check_the_schema_fingerprint_is_the_published_one():
 def check_the_schema_fingerprint_moves_on_every_field_it_covers():
     # A golden value is worth nothing without the control that says the hash is reading
     # what the docstring claims. Each variant changes one field of one column.
-    import json as _json
-    import hashlib as _hashlib
+    #
+    # This used to build the row dicts and hash them here, which was a second
+    # implementation of the thing under test. It would have agreed with the real one right
+    # up until somebody edited one of them. The hash takes its tables as an argument since
+    # ot-073, so the variants now go through the real function. Doing that also showed the
+    # old version was hashing a column Column itself refuses, a nullable key, so one of
+    # the five fields was being graded on a row that cannot exist in the schema.
+    def one(name="t", column="a", sql_type="BIGINT", nullable=True, is_key=False):
+        return (schema.Table(
+            schema="s", name=name,
+            columns=(schema.Column(name=column, sql_type=sql_type,
+                                   nullable=nullable, is_key=is_key),)),)
 
-    def hash_rows(rows):
-        blob = _json.dumps(rows, sort_keys=True, separators=(",", ":"))
-        return _hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+    original = schema.fingerprint(one())
+    for field, value in (("name", "u"), ("column", "b"), ("sql_type", "VARCHAR"),
+                         ("nullable", False)):
+        assert schema.fingerprint(one(**{field: value})) != original, field
 
-    base = [{"table": "s.t", "column": "a", "sql_type": "BIGINT",
-             "nullable": False, "is_key": True}]
-    original = hash_rows(base)
-    for field, value in (("table", "s.u"), ("column", "b"), ("sql_type", "VARCHAR"),
-                         ("nullable", True), ("is_key", False)):
-        variant = [dict(base[0], **{field: value})]
-        assert hash_rows(variant) != original, field
+    # is_key gets its own pair, because a key column has to be NOT NULL and flipping both
+    # at once would not say which of the two the hash saw.
+    assert (schema.fingerprint(one(nullable=False, is_key=True))
+            != schema.fingerprint(one(nullable=False))), "is_key"
 
 
 def check_the_fingerprint_covers_every_column_in_every_table():

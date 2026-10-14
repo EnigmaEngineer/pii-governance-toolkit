@@ -196,16 +196,21 @@ def check_a_reordered_table_is_reported_as_order_and_not_as_a_change():
     assert crawler.compare(shuffled) == ()
 
 
-def check_the_fingerprint_helper_puts_the_declared_tables_back():
-    # crawl.Crawl.fingerprint borrows pii/schema.fingerprint by swapping the module level
-    # TABLES, which is a sharp edge worth a check. If the restore in the finally ever
-    # stopped running, every later check in the process would grade against whatever the
-    # last crawl happened to hold and would still look green.
+def check_hashing_a_crawl_leaves_the_declared_schema_alone():
+    # crawl.Crawl.fingerprint used to borrow pii/schema.fingerprint by rebinding the
+    # module level TABLES and restoring it in a finally. A restore that stopped running
+    # would have left every later check in the process grading against whatever the last
+    # crawl happened to hold, and all of them would still have looked green. The hash
+    # takes its tables as an argument now, so the shared state cannot move at all.
     import pii.schema as declared
 
     before = declared.TABLES
     crawled, _ = _crawl()
-    crawled.fingerprint()
+    # One table short, so the hash is forced over something other than the declared set
+    # and a rebind would be visible rather than harmless.
+    trimmed = crawler.Crawl(crawled.tables[:-1], crawled.key_columns,
+                            crawled.engine, crawled.engine_version)
+    assert trimmed.fingerprint() != fingerprint()
     assert declared.TABLES is before
     assert declared.fingerprint() == fingerprint()
 
