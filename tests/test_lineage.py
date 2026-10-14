@@ -644,3 +644,43 @@ def check_the_real_mart_traces_back_to_both_source_tables():
     # upstream by a value preserving edge and neither arrives only through the count.
     assert set(_mart_graph().upstream_tables("analytics.encounter_daily")) == {
         "raw.encounter", "raw.patient"}
+
+def check_a_refusal_carries_the_table_the_statement_was_writing():
+    # ot-086. A consumer that reads the absence of an edge as a fact about the warehouse
+    # needs to know which table the reader gave up on, and until today nothing recorded it.
+    g = lineage.read_insert_select(
+        "INSERT INTO mart.daily SELECT (SELECT max(x) FROM raw.o) AS peak, "
+        "p.postal_code FROM raw.patient p")
+    assert [r.table for r in g.refusals] == ["mart.daily"]
+    assert g.refusals_for("mart.daily") == g.refusals
+    assert g.refusals_for("raw.patient") == ()
+    assert g.unattributed_refusals() == ()
+
+def check_a_statement_refused_before_its_target_is_parsed_has_no_table_to_name():
+    # The reader rejects the unsupported keyword first, so it never learns what the
+    # statement writes to. That is the case an attributed refusal cannot cover.
+    g = lineage.read_insert_select("MERGE INTO mart.daily USING raw.patient ON 1 = 1")
+    assert len(g.refusals) == 1
+    assert g.refusals[0].table == ""
+    assert len(g.unattributed_refusals()) == 1
+    assert g.refusals_for("mart.daily") == ()
+
+def check_the_select_with_no_from_clause_still_names_its_target():
+    g = lineage.read_insert_select("INSERT INTO mart.daily SELECT 1 AS n")
+    assert [(r.what, r.table) for r in g.refusals] == [("no from clause", "mart.daily")]
+
+def check_the_mart_statement_attributes_nothing_because_it_refuses_nothing():
+    # The control. Adding attribution must not invent refusals on the statement this
+    # warehouse is actually built by.
+    g = _mart_graph()
+    assert g.refusals == ()
+    assert g.unattributed_refusals() == ()
+
+def check_the_row_count_source_is_the_constant_two_modules_agree_on():
+    # mask.weight_candidates keys on this. It is a convention of this reader rather than
+    # anything SQL says, and the constant is where that coupling is visible.
+    g = _mart_graph()
+    counts = [e for e in g.edges
+              if e.target.column == "encounters" and e.kind is EdgeKind.AGGREGATE]
+    assert counts
+    assert all(e.source.column == lineage.ROW_COUNT_SOURCE for e in counts)

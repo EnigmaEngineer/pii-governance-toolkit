@@ -50,6 +50,13 @@ class EdgeKind(Enum):
 # is still a postal code after it.
 VALUE_PRESERVING = (EdgeKind.COPY, EdgeKind.CAST, EdgeKind.GROUPED)
 
+# How this reader writes the source of a `count(*)`. The count names no field and depends
+# on every source table, so it gets an AGGREGATE edge per source with this in the column
+# position. `mask.weight_candidates` keys on it, which makes it a convention two modules
+# share rather than a property of SQL. It is a constant here so that coupling is greppable
+# and so a reader built on something else knows what it has to produce. `ot-086`.
+ROW_COUNT_SOURCE = "*"
+
 @dataclass(frozen=True)
 class ColumnRef:
     table: str
@@ -80,13 +87,31 @@ class Refusal:
     Carried rather than raised, because one unreadable select item should not throw away
     the edges the reader did recover from the rest of the statement. The probe prints
     these beside the edges and the count of them is a published number.
+
+    `table` is the insert target the refusal happened under, and it is empty when the
+    reader gave up before it learned what the statement writes to. That distinction is
+    the whole value of the field. A refusal with a table on it says this table's
+    derivation is partly unread. A refusal with none says some table's derivation is
+    unread and nobody knows which, so no table in the graph can be called underived.
+    Added for `ot-086`, which found a consumer reading the absence of an edge as a fact.
     """
 
     what: str
     detail: str
+    table: str = ""
 
     def __str__(self) -> str:
         return "{:<28} {}".format(self.what, self.detail)
+
+
+def _under(refusals: Sequence[Refusal], table: str) -> Tuple[Refusal, ...]:
+    """Stamp the insert target onto refusals raised while reading its statement.
+
+    Done at the return rather than at each constructor because there are eight places a
+    refusal gets built in `read_insert_select` and the target is known at none of the
+    early ones. A refusal that already names a table keeps it.
+    """
+    return tuple(r if r.table else Refusal(r.what, r.detail, table) for r in refusals)
 
 @dataclass(frozen=True)
 class Graph:
@@ -98,6 +123,20 @@ class Graph:
 
     def out_of(self, address: str) -> Tuple[Edge, ...]:
         return tuple(e for e in self.edges if e.source.address == address)
+
+    def refusals_for(self, table: str) -> Tuple[Refusal, ...]:
+        """What this reader could not read while building the given table."""
+        return tuple(r for r in self.refusals if r.table == table)
+
+    def unattributed_refusals(self) -> Tuple[Refusal, ...]:
+        """Refusals the reader could not pin to a target table.
+
+        A statement rejected on an unsupported keyword never gets as far as parsing its
+        INSERT INTO, so the reader knows it failed and not what it failed on. These
+        poison the whole graph for any consumer that wants to treat a missing edge as a
+        statement about the warehouse.
+        """
+        return tuple(r for r in self.refusals if not r.table)
 
     def derivation_edges(self) -> Tuple[Edge, ...]:
         """Everything except the declared join keys.
@@ -419,8 +458,9 @@ def read_insert_select(sql: str, target_columns: Optional[Sequence[str]] = None)
     body = text[m.end():]
     from_at = re.search(r"\bfrom\b", body, re.IGNORECASE)
     if not from_at:
-        return Graph(edges=(), refusals=(
-            Refusal("no from clause", "a select with no source has no lineage"),))
+        return Graph(edges=(), refusals=_under(
+            (Refusal("no from clause", "a select with no source has no lineage"),),
+            target_table))
     select_list = body[:from_at.start()]
     tail = body[from_at.end():]
 
@@ -437,8 +477,10 @@ def read_insert_select(sql: str, target_columns: Optional[Sequence[str]] = None)
     sources, from_refusals = _parse_sources(from_clause)
     refusals.extend(from_refusals)
     if not sources:
-        return Graph(edges=(), refusals=tuple(refusals) or (
-            Refusal("no source table", "nothing in the from clause parsed"),))
+        return Graph(edges=(), refusals=_under(
+            tuple(refusals) or (
+                Refusal("no source table", "nothing in the from clause parsed"),),
+            target_table))
 
     items = _split_top_level(select_list)
     if target_columns is not None and len(items) != len(target_columns):
@@ -502,7 +544,7 @@ def read_insert_select(sql: str, target_columns: Optional[Sequence[str]] = None)
             # as the row rather than as a field, and every source table gets an edge because
             # the count depends on all of them.
             for s in sources:
-                edges.append(Edge(source=ColumnRef(s.fqn, "*"), target=target,
+                edges.append(Edge(source=ColumnRef(s.fqn, ROW_COUNT_SOURCE), target=target,
                                   kind=kind, detail="row count over the join grain"))
             continue
 
@@ -513,7 +555,7 @@ def read_insert_select(sql: str, target_columns: Optional[Sequence[str]] = None)
                 continue
             edges.append(Edge(source=ref, target=target, kind=kind, detail=detail))
 
-    return Graph(edges=tuple(edges), refusals=tuple(refusals))
+    return Graph(edges=tuple(edges), refusals=_under(tuple(refusals), target_table))
 
 def warehouse_graph(con) -> "Graph":
     """The sample warehouse's graph, built in one place.
