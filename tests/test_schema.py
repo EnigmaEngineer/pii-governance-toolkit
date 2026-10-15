@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pii import schema
-from pii.schema import Column, PlantedColumn, Table
+from pii.schema import Column, ForeignKey, PlantedColumn, Table
 from pii.taxonomy import TAXONOMY, Granularity, Identifiability
 
 
@@ -139,10 +139,16 @@ def check_a_planted_column_is_frozen():
     raise AssertionError("PlantedColumn is not frozen")
 
 
-def check_a_column_and_a_table_are_frozen_too():
+def check_a_column_a_table_and_a_foreign_key_are_frozen_too():
+    # ForeignKey joined the list on the day the same flip was killed two modules away on
+    # mask.Decision. Unfreezing it survived the suite, because nothing had ever tried to
+    # write to one, and a reference a caller can repoint is a reference the fingerprint
+    # pin no longer describes.
     cases = [
         (Column("a", "BIGINT"), "name", "b"),
         (Table("s", "t", (Column("a", "BIGINT"),)), "name", "u"),
+        (ForeignKey("raw.encounter", "patient_id", "raw.patient", "patient_id"),
+         "references_table", "raw.claim"),
     ]
     for obj, attr, value in cases:
         try:
