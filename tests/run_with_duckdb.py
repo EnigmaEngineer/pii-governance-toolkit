@@ -25,6 +25,7 @@ EXTRA_MODULES = [
     "tests.test_warehouse",
     "tests.test_crawl",
     "tests.test_profile",
+    "tests.test_plan_warehouse",
     "tests.test_mask_applied",
     "tests.test_compliance_document",
     "tests.test_ablation_warehouse",

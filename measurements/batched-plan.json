@@ -1,0 +1,143 @@
+{
+  "engine": "duckdb",
+  "figures": "timings",
+  "measurements": [
+    {
+      "columns": 42,
+      "expressions": 420,
+      "median_wall": 0.1792,
+      "rows": 5000,
+      "shape": "per column",
+      "share_executing": 0.7548,
+      "share_planning": 0.2336,
+      "share_unprofiled": 0.0116,
+      "spread": 1.02,
+      "sql_chars": 33855,
+      "statements": 42,
+      "verdict": [
+        "executing"
+      ]
+    },
+    {
+      "columns": 42,
+      "expressions": 379,
+      "median_wall": 0.2262,
+      "rows": 5000,
+      "shape": "batched",
+      "share_executing": 0.9019,
+      "share_planning": 0.0923,
+      "share_unprofiled": 0.0058,
+      "spread": 1.388,
+      "sql_chars": 32420,
+      "statements": 1,
+      "verdict": [
+        "executing"
+      ]
+    },
+    {
+      "columns": 84,
+      "expressions": 840,
+      "median_wall": 0.3591,
+      "rows": 5000,
+      "shape": "per column",
+      "share_executing": 0.7496,
+      "share_planning": 0.2383,
+      "share_unprofiled": 0.0122,
+      "spread": 1.02,
+      "sql_chars": 67782,
+      "statements": 84,
+      "verdict": [
+        "executing"
+      ]
+    },
+    {
+      "columns": 84,
+      "expressions": 757,
+      "median_wall": 0.5578,
+      "rows": 5000,
+      "shape": "batched",
+      "share_executing": 0.9188,
+      "share_planning": 0.0768,
+      "share_unprofiled": 0.0041,
+      "spread": 1.162,
+      "sql_chars": 64877,
+      "statements": 1,
+      "verdict": [
+        "executing"
+      ]
+    },
+    {
+      "columns": 168,
+      "expressions": 1680,
+      "median_wall": 0.7231,
+      "rows": 5000,
+      "shape": "per column",
+      "share_executing": 0.7384,
+      "share_planning": 0.2468,
+      "share_unprofiled": 0.0148,
+      "spread": 1.051,
+      "sql_chars": 136275,
+      "statements": 168,
+      "verdict": [
+        "executing"
+      ]
+    },
+    {
+      "columns": 168,
+      "expressions": 1513,
+      "median_wall": 1.5498,
+      "rows": 5000,
+      "shape": "batched",
+      "share_executing": 0.9374,
+      "share_planning": 0.0589,
+      "share_unprofiled": 0.0034,
+      "spread": 1.24,
+      "sql_chars": 130430,
+      "statements": 1,
+      "verdict": [
+        "executing"
+      ]
+    },
+    {
+      "columns": 336,
+      "expressions": 3360,
+      "median_wall": 1.5428,
+      "rows": 5000,
+      "shape": "per column",
+      "share_executing": 0.7282,
+      "share_planning": 0.252,
+      "share_unprofiled": 0.0169,
+      "spread": 1.011,
+      "sql_chars": 273531,
+      "statements": 336,
+      "verdict": [
+        "executing"
+      ]
+    },
+    {
+      "columns": 336,
+      "expressions": 3025,
+      "median_wall": 5.6207,
+      "rows": 5000,
+      "shape": "batched",
+      "share_executing": 0.961,
+      "share_planning": 0.0369,
+      "share_unprofiled": 0.0021,
+      "spread": 1.046,
+      "sql_chars": 261806,
+      "statements": 1,
+      "verdict": [
+        "executing"
+      ]
+    }
+  ],
+  "passes": 3,
+  "rows": 5000,
+  "table": "bench.wide",
+  "widths": [
+    42,
+    84,
+    168,
+    336
+  ]
+}

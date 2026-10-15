@@ -25,8 +25,8 @@ The last one is the artefact. Everything else is a probe I run to find out wheth
 wrong about something.
 
 ```
-python3 tests/run_all.py            665 checks, standard library only
-python3 tests/run_with_duckdb.py    784 checks, needs the driver
+python3 tests/run_all.py            669 checks, standard library only
+python3 tests/run_with_duckdb.py    792 checks, needs the driver
 ```
 
 ## What is here
@@ -142,7 +142,22 @@ had. Its cost and what it can find are measured against a separate fixture of co
 formatted outside every rule.
 
 **One query per column is the right shape, and the reason I first gave for it was wrong.**
-Both query shapes grow linearly with table width, at an exponent of 1.005 each.
+Both query shapes grow linearly with table width, at an exponent of 1.005 each. Batching
+pays for planning once instead of once per column and is still slower, and here is where it
+goes. Each shape under DuckDB's detailed profile, as a share of the wall time around it:
+
+```
+  cols  shape        stmts  exprs  planning  executing  unprofiled
+    42  per column      42    420    0.2336     0.7548      0.0116
+    42  batched          1    379    0.0923     0.9019      0.0058
+   336  per column     336   3360    0.2520     0.7282      0.0169
+   336  batched          1   3025    0.0369     0.9610      0.0021
+```
+
+One statement spends a third of the planning share that 336 statements do, which is the
+saving batching was supposed to be for. Execution is where it loses, and by more than
+planning saves. The earlier draft of this section blamed binding and planning and had
+nothing behind it.
 
 ## Known limitations
 
@@ -194,6 +209,7 @@ The full list is in [docs/limitations.md](docs/limitations.md).
 - [What the refusal costs, measured twice](docs/design-notes.md#what-the-refusal-costs-measured-twice)
 - [The threshold was never the thing](docs/design-notes.md#the-threshold-was-never-the-thing)
 - [One query per column is the right shape, and the reason I gave for it was wrong](docs/design-notes.md#one-query-per-column-is-the-right-shape-and-the-reason-i-gave-for-it-was-wrong)
+  - [Which part of the engine spends it](docs/design-notes.md#which-part-of-the-engine-spends-it)
 - [What a missing value does to a claim about a column](docs/design-notes.md#what-a-missing-value-does-to-a-claim-about-a-column)
 - [Seven categories with no column, and six with no rule either](docs/design-notes.md#seven-categories-with-no-column-and-six-with-no-rule-either)
 

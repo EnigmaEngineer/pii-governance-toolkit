@@ -1439,8 +1439,8 @@ log was never the reason.
 
 One caveat that points the other way and is worth saying plainly. DuckDB is in process, so
 a round trip here is a function call rather than a network hop. Against a warehouse across
-a wire, 672 round trips cost something this machine cannot measure. The result above is the
-planner cost only. What it rules out is the idea that batching is a free win, and what it
+a wire, 672 round trips cost something this machine cannot measure. What it does not reach is a
+networked reading. What it rules out is the idea that batching is a free win, and what it
 leaves open is the width and the latency where 672 round trips get expensive enough to pay
 3.6 GB for one statement.
 
@@ -1463,6 +1463,75 @@ The median says 1.72 times faster and the ranges overlap, so there is no result 
 probe says so itself rather than leaving the ratio to be quoted on its own. That sentence is
 why the bench repeats every timing. The first version timed each shape once and this
 comparison came back at 0.94 times on one run and 1.29 on the next.
+
+### Which part of the engine spends it
+
+The paragraph above used to say the cost was binding and planning. That came out, because
+nothing in the bench separated the phases and naming one was a guess wearing a measurement's
+clothes. `pii/plan.py` and `scripts/plan_probe.py` separate them.
+
+DuckDB's detailed profile times the planner, the optimizers and the physical planner apart
+from the query's own latency, which `EXPLAIN ANALYZE` hands back as JSON. Three parts, as a
+share of the wall time the caller actually waited. The third part is everything inside the
+wall time and outside DuckDB's latency, which is a quarter of a megabyte of SQL text being
+parsed among other things, and it is reported rather than folded into either phase.
+
+```
+  cols  shape        stmts  exprs  planning  executing  unprofiled
+    42  per column      42    420    0.2336     0.7548      0.0116
+    42  batched          1    379    0.0923     0.9019      0.0058
+    84  per column      84    840    0.2383     0.7496      0.0122
+    84  batched          1    757    0.0768     0.9188      0.0041
+   168  per column     168   1680    0.2468     0.7384      0.0148
+   168  batched          1   1513    0.0589     0.9374      0.0034
+   336  per column     336   3360    0.2520     0.7282      0.0169
+   336  batched          1   3025    0.0369     0.9610      0.0021
+```
+
+Three readings out of that, and the first one is the answer to the question.
+
+**Execution dominates both shapes and it is not close.** The batched statement spends 96
+percent of its wall time executing at 336 columns. So the removed sentence was wrong in
+substance as well as unsupported, and the mechanism is the aggregate operator's own per
+expression state rather than the work of planning the statement.
+
+**The per column shape spends a larger share on planning than the batched one, which is
+exactly what batching was for, and it does not save enough.** 336 statements pay for
+planning 336 times and spend a quarter of their wall time on it. One statement pays once
+and spends under 4 percent. Turning the shares back into this machine's seconds says why
+that does not help. Medians of three passes on two cores with 3915 MB of memory. DuckDB
+1.5.6 running in process:
+
+```
+  cols   per column s   batched s   ratio   planning saved   execution added
+    42         0.1792      0.2262    1.26           0.0210            0.0687
+    84         0.3591      0.5578    1.55           0.0427            0.2433
+   168         0.7231      1.5498    2.14           0.0872            0.9188
+   336         1.5428      5.6207    3.64           0.1814            4.2780
+```
+
+Eight times the width multiplies the planning saved by 8.6 and the execution added by 62.
+The saving is linear in the width and the penalty is not, so there is no width at which this
+turns around. At 42 columns the penalty is three times the saving. At 336 it is twenty three
+times.
+
+Spreads over the three passes were 1.01 to 1.05 for the per column shape and 1.05 to 1.39
+for the batched one. What the spread cannot resolve is the 1.26 at 42 columns, where the
+batched shape's own passes vary by 1.39, so the narrow end of that table is a direction and
+not a ratio. Every row from 168 wide is outside any spread here.
+
+**The part no profiler metric covers is small, and I expected the opposite.** Parsing a
+261,806 character statement reads like it should be expensive. It is 0.21 percent of the
+wall time at 336 columns and under 2 percent everywhere measured. The reason it is in the
+table is that it was not measured before, and a remainder folded into one of the other two
+would have been credited to whichever phase it was folded into.
+
+`measurements/batched-plan.json` carries the shares, the counts and a verdict per row.
+`tests/test_plan_warehouse.py` re-derives every count from the SQL builders and re-measures
+the verdict at the narrow width. `tests/test_manifests.py` holds the four rows the README
+publishes to the manifest they came out of. The manifest declares itself a timings manifest,
+because a share of a duration is still a duration's child, and the rule for one of those is
+that it publishes its spread.
 
 ## What a missing value does to a claim about a column
 

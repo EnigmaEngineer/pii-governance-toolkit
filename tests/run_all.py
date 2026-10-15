@@ -29,6 +29,7 @@ MODULES = [
     "tests.test_ablation",
     "tests.test_sample",
     "tests.test_scale",
+    "tests.test_plan",
     "tests.test_lineage",
     "tests.test_grain",
     "tests.test_roundtwo",
