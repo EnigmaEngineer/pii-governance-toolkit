@@ -767,12 +767,25 @@ def check_person_linked_by_derivation_skips_a_table_that_names_somebody_itself()
 
 
 def check_two_readings_of_one_fact_needs_both_thresholds():
-    # `or` rather than `and`, because one category carrying a threshold and the other not
-    # is precisely the case where the two are not the same fact at two grains. Flipping
-    # the operator sent a None into the family comparison and nothing failed.
+    """Three answers the waiver has to give, and this check could not grade the old shape.
+
+    The comment that stood here claimed flipping the operator sent a None into the family
+    comparison. It does not. Both halves of the old two step test answered False for a
+    mixed pair, so `or` and `and` were the same function on every pair in the taxonomy and
+    this check passed under either. It was recorded as a live mutation survivor on two
+    separate days while sitting four lines under an assertion written to kill it.
+
+    The assertions below are unchanged and they now bite, because the single positive test
+    in `two_readings_of_one_fact` fails on the mixed pair, on the both-absent pair and on
+    the real pair under the three flips available to it.
+    """
+    # One side carries a threshold and the other does not, which is the pair the waiver
+    # must not fire on, in both argument orders.
     assert not classify.two_readings_of_one_fact("birth_date", "person_name")
     assert not classify.two_readings_of_one_fact("person_name", "birth_date")
+    # Neither side carries one. Two unrelated direct identifiers are not one finding.
     assert not classify.two_readings_of_one_fact("person_name", "email")
+    # Both in the temporal family, which is the one case the waiver exists for.
     assert classify.two_readings_of_one_fact("birth_date", "event_date")
 
 

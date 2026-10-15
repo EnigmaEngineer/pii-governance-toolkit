@@ -418,11 +418,18 @@ def two_readings_of_one_fact(first: str, second: str) -> bool:
         other = (pair - {"unknown_identifier"}).pop()
         return TAXONOMY.get(other).identifiability is Identifiability.DIRECT
 
-    a = TAXONOMY.get(first).identifies_at
-    b = TAXONOMY.get(second).identifies_at
-    if a is None or b is None:
-        return False
-    return granularity_family(a) == granularity_family(b)
+    # One positive test rather than a guard and a comparison. The two step version read
+    # better and it could not be graded. `granularity_family` returns None for a category
+    # carrying no threshold, so the comparison on the second line already answered False
+    # for a mixed pair, which made the guard's `or` interchangeable with `and` on all 625
+    # pairs the taxonomy can build. Deleting the guard instead is not available either:
+    # two categories that both carry no threshold then compare None against None and come
+    # back True, which waives the conflict penalty on 442 of those pairs, two unrelated
+    # direct identifiers included. Asking for a family and requiring it to be present is
+    # the same answer on every pair and it fails when any part of it is flipped.
+    first_family = granularity_family(TAXONOMY.get(first).identifies_at)
+    second_family = granularity_family(TAXONOMY.get(second).identifies_at)
+    return first_family is not None and first_family == second_family
 
 
 @dataclass(frozen=True)
