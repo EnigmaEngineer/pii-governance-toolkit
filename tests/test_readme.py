@@ -1,4 +1,4 @@
-"""Check the counts the README publishes against what the runners actually collect.
+"""Check the figures the README publishes against what the repo already knows.
 
 Two numbers in `## Running the checks` say how many checks each runner holds. Both were
 wrong by nine on 2026-10-09, and the replacement written the same hour was wrong by one
@@ -14,6 +14,10 @@ that import the driver. That means `tests/run_all.py` cannot catch its own count
 and only the full runner can. Stated rather than worked around. A standard library check
 that counted only the standard library half would leave the other number unguarded, which
 is the situation this replaces.
+
+The obfuscated recall check below needs no driver and lives here anyway, because both
+checks are about README figures and splitting them across two modules by dependency is how
+the second one stops being found.
 """
 
 from __future__ import annotations
@@ -30,6 +34,13 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(HERE, "README.md")
 
 LINE = re.compile(r"^python3 (tests/\S+)\s+(\d+) checks")
+
+# `all three   20/20   12   2   0` in the ablation table, and the sentence under the
+# obfuscated result that quotes the same two cells as its baseline.
+ABLATION_ALL = re.compile(r"^all three\s+(\d+)/(\d+)\s+(\d+)\s")
+OBFUSCATED = re.compile(
+    r"recall falls from (\d+) of (\d+) to \d+ of \d+ and automatic\s*\n?\s*"
+    r"masking from (\d+) to \d+")
 
 
 def _published():
@@ -65,3 +76,34 @@ def check_every_published_check_count_is_what_the_runner_collects():
             "README.md says {} holds {} checks and it collects {}. Fix the README."
             .format(runner, published.get(runner), count))
 
+
+def check_the_obfuscated_sentence_starts_from_the_ablation_tables_own_baseline():
+    """The sentence under the obfuscated result against the table four blocks above it.
+
+    This is the one that went stale. The planted label on `analytics.encounter_daily.day`
+    moved, the denominator went from 19 to 20, the ablation table followed it because it is
+    generated, and the prose under the obfuscated result kept quoting 19 to 9 for three
+    weeks. Both halves of that sentence are cells of the table and neither was derived.
+
+    A full re-measurement of the obfuscated arm would need the warehouse rebuilt with every
+    column renamed, which is `scripts/classify_probe.py --db ...` and is not a check's
+    budget. This grades the baseline the sentence claims, which is the half that drifted.
+    """
+    with open(README, encoding="utf-8") as fh:
+        text = fh.read()
+
+    table = None
+    for line in text.splitlines():
+        hit = ABLATION_ALL.match(line.strip())
+        if hit:
+            table = (int(hit.group(1)), int(hit.group(2)), int(hit.group(3)))
+            break
+    assert table is not None, "no 'all three' row found in the ablation table"
+
+    hit = OBFUSCATED.search(text)
+    assert hit is not None, "no obfuscated recall sentence found"
+    claimed = (int(hit.group(1)), int(hit.group(2)), int(hit.group(3)))
+
+    assert claimed == table, (
+        "the obfuscated sentence starts from {} and the ablation table says {}. "
+        "Fix the sentence.".format(claimed, table))

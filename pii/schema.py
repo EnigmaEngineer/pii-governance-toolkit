@@ -296,10 +296,12 @@ PLANTED: Tuple[PlantedColumn, ...] = (
                       "a group of one, so in 1,504 encounters the day is one patient's "
                       "single admission sitting beside their postal code. Lineage agrees "
                       "and reads it as a CAST of raw.encounter.admitted_at. Moving this "
-                      "label costs the recall headline, which goes from 19 of 19 to 19 of "
-                      "20, because the classifier calls it not personal and now that is a "
-                      "miss. A published number is not a reason to keep an answer key the "
-                      "data contradicts."),
+                      "label took the recall headline from 19 of 19 to 19 of 20 on the "
+                      "day it moved, because the classifier calls it not personal on this "
+                      "column's own properties and that became a miss. The lineage rescue "
+                      "and the second round recovered it later and the headline reads 20 "
+                      "of 20 now. A published number was never a reason to keep an answer "
+                      "key the data contradicts."),
     PlantedColumn("analytics.encounter_daily", "department", "not_personal"),
     PlantedColumn("analytics.encounter_daily", "postal_code", "postal_code",
                   observed=_G.POSTAL_5,

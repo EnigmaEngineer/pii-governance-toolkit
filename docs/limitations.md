@@ -146,6 +146,29 @@ accept everything, and it is labelled a hypothesis rather than a result.
 The rest raise rather than returning the column untouched. The taxonomy is wider than the
 applier.
 
+**One wrong answer from the shape rule can relabel a whole table and nothing bounds how
+far that goes.** `unknown_identifier` is a direct identifier, and a table counts as being
+about people when any column in it is a direct identifier at review confidence or better.
+So one false shape match flips the table verdict, and every other column in that table is
+then read as belonging to a table about people. The fixture shows it rather than argues it.
+`probe.outside_rule` goes from false to true on a trace id alone. Three things keep it off
+the shipped answer and none of them is a bound. The arm is off by default. The shape
+strength is 0.55 against an accept threshold of 0.75, so it cannot mask anything on its own.
+Direct is the conservative direction for a governance tool. What is missing is a limit on
+the blast radius, and the shape of that fix is to make the person linked test read a
+category list rather than an identifiability level. **Do not turn this arm on against a
+warehouse whose answer nobody already knows.**
+
+**The batched profiler path has no caller and it is kept on purpose.**
+`profile.profile_table` and `profile.profile_crawl_batched` are committed and every probe
+and every check goes through `profile.profile_column`, because the measurement says the
+batched shape is slower at every width and takes the process down at 672 columns. By the
+strictest reading that is dead code. It is here because it is the evidence the shape
+comparison rests on, and deleting it would delete the comparison. `profile.disagreements`
+runs at every width in the bench so the path cannot rot unnoticed. A caller against a
+warehouse across a wire, where a round trip is not a function call, is the case that would
+make it the shipped path instead of the exhibit.
+
 **The sampling arm reads an ordered sample and that is a limitation rather than a choice.**
 `sample.sample_column` takes the first 500 rows. An ordered sample of a clustered table sees
 one region of it, so a format used by one site only can be missed outright even when the

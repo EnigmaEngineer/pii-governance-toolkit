@@ -26,7 +26,7 @@ wrong about something.
 
 ```
 python3 tests/run_all.py            674 checks, standard library only
-python3 tests/run_with_duckdb.py    797 checks, needs the driver
+python3 tests/run_with_duckdb.py    798 checks, needs the driver
 ```
 
 ## What is here
@@ -132,8 +132,8 @@ recall falls from 20 of 20 to 10 of 20. The value arm moves two. The structure a
 one.
 
 **Take the column names away and most of the evidence goes with them.** Rebuilt with every
-column renamed to a position label, recall falls from 19 to 9 and automatic masking from 12
-to 3. A clinician licence number and a telephone number are both ten digits, and only the
+column renamed to a position label, recall falls from 20 of 20 to 10 of 20 and automatic
+masking from 12 to 3. A clinician licence number and a telephone number are both ten digits, and only the
 name ever told them apart.
 
 **An opt in arm that reads values changed no decision on this warehouse.** Four of the 42
@@ -169,6 +169,7 @@ nothing behind it.
 - Grants are modelled at table level only, and the grants and query log are generated.
 - The k target defaults to 2, and 2 is a weak bar.
 - One unreadable statement in a warehouse costs every table its weight verdict.
+- Nothing bounds how far one wrong answer from the opt in sampling arm spreads.
 
 The full list is in [docs/limitations.md](docs/limitations.md).
 

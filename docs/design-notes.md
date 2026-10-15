@@ -346,7 +346,10 @@ their postal code. The rule that drops the signal still fires and the reason it 
 wrong. What it turns on is whether the grouping is coarse enough to hide anybody, and
 nothing in the classifier measures that. **The planted label now reads `event_date` and the
 recall figures above carry the cost.** The denominator went from 19 to 20 and the classifier
-still calls the column not personal, so that is a miss rather than a find. Keeping an
+calls the column not personal on its own properties, so at the time of that change it was a
+miss rather than a find. The lineage rescue and the second classifying round are what
+recovered it, which is why the headline reads 20 of 20 today and why the structure arm moves
+exactly this one band in the table above. Keeping an
 answer key the data contradicts in order to protect a published number is the trade this
 repo is not going to make. See `scripts/lineage_probe.py` and `scripts/mask_probe.py`.
 
@@ -416,7 +419,7 @@ flagged and planted not personal   1
 
 Same rows and same types and same nulls. The column names are replaced by position labels
 and the whole thing is rebuilt as a real database rather than stubbed out in Python. Recall
-falls from 19 to 9 and automatic masking from 12 to 3. Ten digits is ten digits, so a
+falls from 20 of 20 to 10 of 20 and automatic masking from 12 to 3. Ten digits is ten digits, so a
 clinician licence number and a telephone number come back as the same thing, and only the
 name ever told them apart.
 
