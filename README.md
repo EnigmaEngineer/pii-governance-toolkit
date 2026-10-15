@@ -25,8 +25,8 @@ The last one is the artefact. Everything else is a probe I run to find out wheth
 wrong about something.
 
 ```
-python3 tests/run_all.py            669 checks, standard library only
-python3 tests/run_with_duckdb.py    792 checks, needs the driver
+python3 tests/run_all.py            674 checks, standard library only
+python3 tests/run_with_duckdb.py    797 checks, needs the driver
 ```
 
 ## What is here

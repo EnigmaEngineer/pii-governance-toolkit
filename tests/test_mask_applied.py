@@ -240,11 +240,9 @@ def check_the_derivation_manifest_re_derives_from_a_database():
 def check_the_derivation_manifest_carries_no_wall_time():
     # Same door closer as the round two manifest. A derivation state is a count and a
     # verdict and nothing in it is allowed to be a duration.
-    with open(MANIFEST, encoding="utf-8") as fh:
-        text = fh.read()
-    for word in ("_ms", "seconds", "millis"):
-        assert word not in text, (
-            "{} is a wall time and the manifest is counts only".format(word))
+    from tests.runner import assert_no_wall_time
+
+    assert_no_wall_time(MANIFEST)
 
 
 def check_losing_one_statement_costs_the_whole_warehouse_its_weight_verdict():

@@ -211,12 +211,7 @@ def check_the_manifest_carries_no_wall_time():
     that adds a timing to the manifest gets told here rather than in a README nobody can
     reproduce.
     """
-    import json
+    from tests.runner import assert_no_wall_time
 
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(here, "measurements", "roundtwo-cost.json"),
-              encoding="utf-8") as fh:
-        text = fh.read()
-    for word in ("_ms", "seconds", "millis"):
-        assert word not in text, (
-            "{} is a wall time and the manifest is counts only".format(word))
+    assert_no_wall_time(os.path.join(here, "measurements", "roundtwo-cost.json"))

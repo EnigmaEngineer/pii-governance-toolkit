@@ -37,6 +37,7 @@ MODULES = [
     "tests.test_review",
     "tests.test_access",
     "tests.test_compliance",
+    "tests.test_manifests",
     "tests.test_deps",
 ]
 
